@@ -234,6 +234,49 @@
   - 設計上要在掃描前記下 `NextUsn`，第 3 階段從這裡接續。
   - 文件沒寫需要什麼權限，實作時實測。
 
+### 2026-11-03 第 2 階段核心實作
+
+- 使用者決定：硬連結預設每個連結各算一次（A）；只計入資料夾列舉看得到的項目（含隱藏檔、系統檔），中繼檔案、`$Extend`、命名串流不計入。
+- 新增核心模組：`index`（資料結構與彙總）、`layout_parser`（版面輸出解析，純解析、無 I/O）、`layout_index_builder`、`ntfs_index`、`walk_index`、`dir_listing`。第 1 階段的 `dir_walker` 保留給 `scan`。
+- 逐目錄掃描改用 [FileIdBothDirectoryInfo](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_both_dir_info)：同時取得 64 位元檔案 ID，NTFS 掃描的根目錄判斷也用同一個函式。檔案系統不支援時退回 `FileFullDirectoryInfo`。文件說明 FAT 的檔案 ID 可能隨重組改變，所以逐目錄掃描用掃描路徑本身連結上層，ID 只當資料保存。
+- **資料夾 reparse point 的規則改變**：第 1 階段略過所有資料夾 reparse point。現在只略過 [IsReparseTagNameSurrogate](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-isreparsetagnamesurrogate) 為真的（文件：代表系統中另一個具名項目，例如掛載的資料夾，包括 junction 和符號連結）。其他種類（例如雲端檔案的資料夾）裡面是真的檔案，檔案總管也會顯示，所以計入。標記用 [FILE_ATTRIBUTE_TAG_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_attribute_tag_info)（`FileAttributeTagInfo`）讀取；讀不到時當作不跟隨。
+- 測試：`tests/core_tests.cpp`，120 項檢查，不需提權。包含解析器的每一種截斷長度、錯誤 offset、未知版本、負數大小，以及一個真實的暫存資料夾（硬連結、隱藏系統檔、命名串流、junction）。也確認列舉回傳的檔案 ID 等於開啟 handle 後 `GetFileInformationByHandle` 的 ID，也就是版面資料用的 ID。
+- AddressSanitizer：CMake 選項 `DIRSIZE_ASAN`。依 [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) 與 [ASan 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building)：`/MT` 可用，但 VS 17.7 起執行檔需要 `clang_rt.asan_dynamic-x86_64.dll`（在 MSVC 工具的 bin 資料夾）。ASan 版測試 0 個錯誤。
+- `dirsize-cli verify X:`：兩種引擎各建一次索引，逐資料夾比對，並逐一比對根目錄直屬檔案（用來查 1.63 GB 落差）。排除量分成「根目錄列舉看不到的檔案」和「隱藏資料夾底下的檔案」兩類。也輸出跟隨的 reparse 種類、根目錄 ID 對到幾個、索引表格大小與程序記憶體。`scripts/verify.ps1` 需在提權的 PowerShell 執行。
+
+#### 驗證結果（2026-11-03，提權，C:、D: 各一次）
+
+`verify` 先跑 NTFS 掃描，**接著**跑逐目錄掃描，所以逐目錄是熱快取，兩者的時間不能直接比冷熱。
+
+| 項目 | C: | D: |
+|---|---|---|
+| 資料夾數（兩種掃描） | 200,373／200,373 | 115,049／115,049 |
+| 檔案數（NTFS／逐目錄） | 981,818／982,086 | 824,182／824,182 |
+| 邏輯大小差（NTFS − 逐目錄） | +23,190,118 B | +61,981,414 B |
+| 配置大小差 | +972,207,264 B | +65,218,288 B |
+| NTFS 掃描時間（列舉＋建索引） | 8.58 s（8.29＋0.29） | 19.25 s（18.83＋0.42） |
+| 逐目錄掃描時間 | 32.5 s | 16.2 s |
+| 索引表格 | 50.39 MB | 33.57 MB |
+| 程序峰值工作集 | 130.22 MB | 101.74 MB |
+
+- 解析器：兩顆磁碟都是 0 個異常項目、0 個未知版本、0 個截斷；列舉都以 `ERROR_HANDLE_EOF` 結束。
+- **根目錄 ID 判斷正確**：C: 根目錄列舉 23 項，在版面資料中對到 23 項；D: 22／22。
+- **1.63 GB 落差已確認**：C: 根目錄列舉看不到的檔案有 10 個，合計 1,631,545,888 B，和之前的落差相同。根目錄直屬、列舉看得到的檔案，兩種掃描逐一比對大小全部一致（C: 9／9，D: 11／11）。D: 這類檔案 10 個，合計 6.56 GB。
+- 隱藏資料夾（`$Extend` 等）：兩顆各 8 個，底下的檔案 C: 159 個（180 MB）、D: 6 個（21 MB），不計入。
+- junction／符號連結等略過的資料夾：C: 276 個、D: 3,186 個，兩種掃描數字相同。
+- D:：檔案數、資料夾數完全一致。位元組差異集中在兩個資料夾：一個虛擬機器的磁碟檔資料夾（60 MB），一個開發工具的快取資料夾（2 MB），都是使用中的檔案。
+- C:：
+  - 檔案數差 −268，幾乎全在使用者 AppData 下一個應用程式的資料夾（−267），另有兩個 ±1、−2 的資料夾。這些資料夾在掃描期間正在使用；NTFS 掃描比逐目錄早約 30 秒，**推測**是這段時間新增的檔案，未驗證。
+  - 邏輯大小差和上次同時比對相同，集中在 Temp、資料庫伺服器記錄檔、瀏覽器與應用程式快取等寫入中的檔案，NTFS 掃描較多。
+- 記憶體：C: 索引表格 50.39 MB，符合設計估計的 50–60 MB。峰值工作集包含 4 MB 版面緩衝區和建索引時的暫存陣列。
+
+**未解釋，待查：**
+- C: 配置大小差 +972 MB，遠大於邏輯大小差 +23 MB；D: 兩者接近。`verify` 目前只依邏輯大小往下鑽，看不出差在哪個資料夾，要加上依配置大小比對。
+- C: `System Volume Information` 直屬檔案：檔案數相同，NTFS 掃描的邏輯大小少 234,881,024 B（剛好 224 MiB），方向和其他差異相反。
+- C: 有 1 個資料夾帶 reparse 屬性，但讀到的標記是 `0x00000000`，兩種掃描都跟隨了它。還不知道是哪個資料夾。
+- 兩顆磁碟各有 4 個找不到上層資料夾的檔案（unreachable），還沒查是哪些。
+- 冷快取速度：D: 的 NTFS 掃描這次 19.25 s，比逐目錄還慢，但兩者快取狀態不同，要重開機後分別測。
+
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
 - 實測：`FSCTL_QUERY_FILE_LAYOUT` 在一般權限下無法使用（錯誤 1）；逐目錄掃描可以用，但讀不到部分資料夾。
@@ -271,4 +314,10 @@
 | 第 2 階段查證 | [FILE_STREAM_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_stream_info) |
 | 第 2 階段設計 | [FSCTL_QUERY_USN_JOURNAL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_query_usn_journal) |
 | 第 2 階段設計 | [USN_JOURNAL_DATA_V0](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_journal_data_v0) |
+| 第 2 階段實作 | [FILE_ID_BOTH_DIR_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_both_dir_info) |
+| 第 2 階段實作 | [FILE_INFO_BY_HANDLE_CLASS](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ne-minwinbase-file_info_by_handle_class) |
+| 第 2 階段實作 | [FILE_ATTRIBUTE_TAG_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_attribute_tag_info) |
+| 第 2 階段實作 | [IsReparseTagNameSurrogate](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-isreparsetagnamesurrogate) |
+| 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
+| 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
