@@ -29,4 +29,4 @@ target_link_libraries(dirsize-cli PRIVATE dirsize_core psapi)
 
 # Phase 2 feasibility probe (measurement only, not shipped).
 add_executable(layout-probe tools/layout_probe.cpp)
-target_link_libraries(layout-probe PRIVATE psapi)
+target_link_libraries(layout-probe PRIVATE dirsize_core psapi)

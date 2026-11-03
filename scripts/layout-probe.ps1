@@ -12,6 +12,8 @@
 param(
     [string[]]$Drives = @('C', 'D'),
     [int]$Runs = 2,
+    # Also run the Phase 1 walker right after the layout pass and compare per folder.
+    [switch]$Compare,
     [string]$OutDir = (Join-Path $PSScriptRoot '..\bench-results')
 )
 
@@ -29,11 +31,12 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 foreach ($drive in $Drives) {
     for ($run = 1; $run -le $Runs; $run++) {
-        $file = Join-Path $OutDir "$stamp-$tag-layout-$drive-run$run.txt"
+        $kind = if ($Compare) { "compare" } else { "layout" }
+        $file = Join-Path $OutDir "$stamp-$tag-$kind-$drive-run$run.txt"
         Write-Host "Probing ${drive}: (run $run of $Runs) ..."
-        $out = & $exe $drive
+        $out = if ($Compare) { & $exe $drive --compare } else { & $exe $drive }
         [IO.File]::WriteAllLines($file, [string[]]$out, [Text.UTF8Encoding]::new($false))
-        $out | Select-String -Pattern 'Enumeration ended|File entries|Enumerate time|Total time|Peak working set' |
+        $out | Select-String -Pattern 'Enumeration ended|File entries|Enumerate time|Phase 1 walk|Root totals|Total time|Peak working set' |
             ForEach-Object { "  $_" }
     }
 }

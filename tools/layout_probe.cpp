@@ -16,6 +16,9 @@
 #include <winioctl.h>
 #include <psapi.h>
 
+#include "core/dir_walker.h"
+#include "core/path_util.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -307,10 +310,11 @@ void HexDump(const std::vector<BYTE>& raw, size_t limit) {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc < 2 || !iswalpha(argv[1][0])) {
-        Line(L"usage: layout-probe <drive letter>");
+        Line(L"usage: layout-probe <drive letter> [--compare]");
         return 2;
     }
     const wchar_t drive = static_cast<wchar_t>(towupper(argv[1][0]));
+    const bool compare = argc >= 3 && std::wstring_view(argv[2]) == L"--compare";
 
     const bool elevated = IsElevated();
     const bool backup = EnableBackupPrivilege();
@@ -375,7 +379,7 @@ int wmain(int argc, wchar_t** argv) {
                 } else {
                     Link link;
                     link.parent = name->ParentFileReferenceNumber;
-                    if (link.parent == rootId) {
+                    if (link.parent == rootId || (entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
                         link.name.assign(name->FileName, name->FileNameLength / sizeof(WCHAR));
                     }
                     record.links.push_back(std::move(link));
@@ -445,9 +449,24 @@ int wmain(int argc, wchar_t** argv) {
         Line(L"Pass 1 did not reach ERROR_HANDLE_EOF; results are partial.");
     }
 
+    // ---- compare mode: Phase 1 walk right after pass 1 -------------------------
+
+    const std::wstring extendedRoot = dirsize::ToExtendedPath(rootPath);
+    dirsize::WalkResult rootWalk;
+    if (compare) {
+        const auto tw = std::chrono::steady_clock::now();
+        rootWalk = dirsize::WalkTree(extendedRoot);
+        Line(L"");
+        Line(L"== Phase 1 walk of %s right after pass 1: %.3f s, files %llu, folders %llu, denied %llu, "
+             L"other errors %llu, reparse skipped %llu",
+             rootPath.c_str(), std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count(),
+             rootWalk.totals.files, rootWalk.totals.folders, rootWalk.accessDenied, rootWalk.otherErrors,
+             rootWalk.reparsePointsSkipped);
+    }
+
     // ---- pass 2: does STREAM_INFORMATION change the stream version? --------
 
-    {
+    if (!compare) {
         const DWORD pass2Flags = pass1Flags | QUERY_FILE_LAYOUT_INCLUDE_STREAM_INFORMATION |
                                  QUERY_FILE_LAYOUT_INCLUDE_STREAM_INFORMATION_FOR_DATA_ATTRIBUTE;
         std::map<DWORD, std::uint64_t> versions2;
@@ -536,10 +555,12 @@ int wmain(int argc, wchar_t** argv) {
     Line(L"Decoded (code, idHash) matched to named streams:");
     for (const auto& [key, n] : namedKeys) Line(L"  0x%04lx 0x%08x : %llu", key.first, key.second, n);
 
-    Line(L"");
-    Line(L"Raw stream bytes for the first 8 samples (v2 offsets: Version@0 Next@4 Flags@8 ExtOff@12 "
-         L"Alloc@16 EOF@24 InfoOff@32 Code@36 AttrFlags@40 IdLen@44 Id@48):");
-    for (size_t i = 0; i < samples.size() && i < 8; ++i) {
+    if (!compare) {
+        Line(L"");
+        Line(L"Raw stream bytes for the first 8 samples (v2 offsets: Version@0 Next@4 Flags@8 ExtOff@12 "
+             L"Alloc@16 EOF@24 InfoOff@32 Code@36 AttrFlags@40 IdLen@44 Id@48):");
+    }
+    for (size_t i = 0; !compare && i < samples.size() && i < 8; ++i) {
         std::vector<OracleStream> oracle;
         DWORD error = 0;
         QueryOracle(rootHandle, samples[i].id, oracle, error);
@@ -681,6 +702,164 @@ int wmain(int argc, wchar_t** argv) {
     Line(L"Top-level folders (%zu), counted once per link:", rows.size());
     for (const TopRow& r : rows) {
         row((L"  " + Printable(r.name)).c_str(), r.t);
+    }
+
+    // ---- compare mode: per-folder comparison with the Phase 1 walker ----------
+    //
+    // Layout totals use Phase 1 semantics: unnamed data stream only, files
+    // counted once per link, directory reparse points neither counted nor
+    // descended into.
+    if (compare) {
+        struct Agg {
+            std::uint64_t files = 0, folders = 0, eof = 0, alloc = 0;
+            void Add(const Agg& o) {
+                files += o.files;
+                folders += o.folders;
+                eof += o.eof;
+                alloc += o.alloc;
+            }
+        };
+        std::unordered_map<std::uint64_t, Agg> direct, subtree;
+        std::unordered_map<std::uint64_t, std::vector<std::pair<std::wstring, std::uint64_t>>> kids;
+        std::vector<std::uint64_t> dirs;
+        for (const auto& [id, record] : files) {
+            const bool isDir = (record.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            if (isDir) {
+                dirs.push_back(id);
+                if (id != rootId && !record.links.empty()) {
+                    const Link& link = record.links.front();
+                    kids[link.parent].emplace_back(link.name, id);
+                    if (!(record.attributes & FILE_ATTRIBUTE_REPARSE_POINT)) ++direct[link.parent].folders;
+                }
+                continue;
+            }
+            std::uint64_t eof = 0, alloc = 0;
+            for (const Stream& s : record.streams) {
+                if (kindOf(s) == kData) {
+                    eof += s.endOfFile;
+                    alloc += s.allocation;
+                }
+            }
+            for (const Link& link : record.links) {
+                Agg& a = direct[link.parent];
+                ++a.files;
+                a.eof += eof;
+                a.alloc += alloc;
+            }
+        }
+        // Depth of each directory, then roll subtrees up deepest first.
+        std::unordered_map<std::uint64_t, int> depthOf;
+        depthOf[rootId] = 0;
+        std::function<int(std::uint64_t, int)> depth = [&](std::uint64_t id, int guard) -> int {
+            auto known = depthOf.find(id);
+            if (known != depthOf.end()) return known->second;
+            auto it = files.find(id);
+            int d = 1 << 20;  // unreachable from the root
+            if (guard < 4096 && it != files.end() && !it->second.links.empty()) {
+                const int pd = depth(it->second.links.front().parent, guard + 1);
+                d = pd >= (1 << 20) ? pd : pd + 1;
+            }
+            depthOf[id] = d;
+            return d;
+        };
+        for (std::uint64_t d : dirs) depth(d, 0);
+        std::sort(dirs.begin(), dirs.end(), [&](std::uint64_t a, std::uint64_t b) { return depthOf[a] > depthOf[b]; });
+        Agg reparseExcluded{};
+        std::uint64_t reparseDirsWithContent = 0;
+        for (std::uint64_t d : dirs) subtree[d].Add(direct[d]);
+        for (std::uint64_t d : dirs) {
+            if (d == rootId || depthOf[d] >= (1 << 20)) continue;
+            const FileRecord& record = files[d];
+            const Agg& mine = subtree[d];
+            if (record.attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                if (mine.files || mine.folders) ++reparseDirsWithContent;
+                reparseExcluded.Add(mine);
+                continue;
+            }
+            subtree[record.links.front().parent].Add(mine);
+        }
+        Line(L"");
+        Line(L"== Compare with Phase 1 walker (unnamed data, once per link, reparse dirs excluded)");
+        Line(L"Reparse dirs with content in layout: %llu (files %llu, data %llu B) - excluded like Phase 1",
+             reparseDirsWithContent, reparseExcluded.files, reparseExcluded.eof);
+        Line(L"Root totals: Phase 1 files %llu folders %llu EOF %llu | layout files %llu folders %llu EOF %llu",
+             rootWalk.totals.files, rootWalk.totals.folders, rootWalk.totals.logicalBytes, subtree[rootId].files,
+             subtree[rootId].folders, subtree[rootId].eof);
+
+        constexpr std::int64_t kBytesThreshold = 1 << 20;
+        auto differs = [&](std::int64_t df, std::int64_t db) { return df != 0 || db > kBytesThreshold || db < -kBytesThreshold; };
+
+        // Compares one directory's children; recurses into the worst ones.
+        std::function<void(const std::wstring&, const std::wstring&, std::uint64_t, int, const dirsize::WalkResult*)>
+            compareDir = [&](const std::wstring& extended, const std::wstring& label, std::uint64_t dirId, int level,
+                             const dirsize::WalkResult* given) {
+                dirsize::WalkResult local;
+                if (given == nullptr) local = dirsize::WalkTree(extended);
+                const dirsize::WalkResult& w = given ? *given : local;
+                std::unordered_map<std::wstring, std::uint64_t> byName;
+                for (const auto& [name, id] : kids[dirId]) byName[name] = id;
+
+                struct Diff {
+                    std::wstring name;
+                    std::uint64_t id = 0;
+                    std::int64_t files = 0, bytes = 0;
+                };
+                std::vector<Diff> diffs;
+                Agg p1Children{};
+                std::unordered_map<std::wstring, bool> seen;
+                for (const dirsize::ChildFolder& c : w.children) {
+                    p1Children.files += c.totals.files;
+                    p1Children.eof += c.totals.logicalBytes;
+                    seen[c.name] = true;
+                    auto it = byName.find(c.name);
+                    if (it == byName.end()) {
+                        Line(L"%*s[%s] only in Phase 1: files %llu, %llu B", level * 2 + 2, L"", Printable(c.name).c_str(),
+                             c.totals.files, c.totals.logicalBytes);
+                        continue;
+                    }
+                    const Agg& l = subtree[it->second];
+                    Diff d;
+                    d.name = c.name;
+                    d.id = it->second;
+                    d.files = static_cast<std::int64_t>(c.totals.files) - static_cast<std::int64_t>(l.files);
+                    d.bytes = static_cast<std::int64_t>(c.totals.logicalBytes) - static_cast<std::int64_t>(l.eof);
+                    const std::int64_t dfolders =
+                        static_cast<std::int64_t>(c.totals.folders) - static_cast<std::int64_t>(l.folders + 1);
+                    if (differs(d.files, d.bytes) || dfolders != 0) {
+                        Line(L"%*s[%s] Phase1-layout: files %+lld, folders %+lld, bytes %+lld (P1 files %llu, %llu B)",
+                             level * 2 + 2, L"", Printable(c.name).c_str(), d.files, dfolders, d.bytes, c.totals.files,
+                             c.totals.logicalBytes);
+                        diffs.push_back(d);
+                    }
+                }
+                for (const auto& [name, id] : kids[dirId]) {
+                    if (seen.count(name) || (files[id].attributes & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+                    const Agg& l = subtree[id];
+                    Line(L"%*s[%s] only in layout: files %llu, %llu B", level * 2 + 2, L"", Printable(name).c_str(),
+                         l.files, l.eof);
+                }
+                // Files directly in this folder.
+                const std::int64_t df = static_cast<std::int64_t>(w.totals.files - p1Children.files) -
+                                        static_cast<std::int64_t>(direct[dirId].files);
+                const std::int64_t db = static_cast<std::int64_t>(w.totals.logicalBytes - p1Children.eof) -
+                                        static_cast<std::int64_t>(direct[dirId].eof);
+                if (level > 0 && differs(df, db)) {
+                    Line(L"%*s(files directly in %s) Phase1-layout: files %+lld, bytes %+lld", level * 2 + 2, L"",
+                         Printable(label).c_str(), df, db);
+                }
+                if (level >= 5) return;
+                std::sort(diffs.begin(), diffs.end(), [](const Diff& a, const Diff& b) {
+                    return std::llabs(a.bytes) + std::llabs(a.files) * 4096 > std::llabs(b.bytes) + std::llabs(b.files) * 4096;
+                });
+                for (size_t i = 0; i < diffs.size() && i < 3; ++i) {
+                    const Diff& d = diffs[i];
+                    if (std::llabs(d.bytes) < (16 << 20) && std::llabs(d.files) < 50) continue;
+                    Line(L"%*s> drill into %s", level * 2 + 2, L"", Printable(d.name).c_str());
+                    compareDir(dirsize::JoinPath(extended, d.name), d.name, d.id, level + 1, nullptr);
+                }
+            };
+        Line(L"Top level (only differing folders are listed):");
+        compareDir(extendedRoot, rootPath, rootId, 0, &rootWalk);
     }
 
     Line(L"");
