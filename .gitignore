@@ -66,3 +66,28 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# ---- DirSize ----
+# Build output
+build/
+out/
+bin/
+obj/
+x64/
+Debug/
+Release/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+CMakeSettings.json
+CMakeUserPresets.json
+
+# Runtime artifacts
+*.log
+*.dirsize-cache
