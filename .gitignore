@@ -91,3 +91,4 @@ CMakeUserPresets.json
 # Runtime artifacts
 *.log
 *.dirsize-cache
+bench-results/

@@ -98,6 +98,29 @@ bool IsElevated() {
     return elevated;
 }
 
+// Enables SeBackupPrivilege on the process token. Combined with
+// FILE_FLAG_BACKUP_SEMANTICS, this lets an elevated process list folders whose
+// ACLs would otherwise deny access. Returns false when the privilege is not
+// held (for example, when not elevated).
+bool EnableBackupPrivilege() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
+        return false;
+    }
+    TOKEN_PRIVILEGES privileges{};
+    privileges.PrivilegeCount = 1;
+    privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    bool enabled = false;
+    if (LookupPrivilegeValueW(nullptr, SE_BACKUP_NAME, &privileges.Privileges[0].Luid) &&
+        AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), nullptr, nullptr)) {
+        // AdjustTokenPrivileges succeeds even if the privilege is not held;
+        // ERROR_NOT_ALL_ASSIGNED reports that case.
+        enabled = GetLastError() == ERROR_SUCCESS;
+    }
+    CloseHandle(token);
+    return enabled;
+}
+
 std::uint64_t PeakWorkingSetBytes() {
     PROCESS_MEMORY_COUNTERS counters{};
     if (GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) {
@@ -114,6 +137,13 @@ struct ScanOptions {
     bool json = false;
 };
 
+struct RunInfo {
+    double seconds = 0;
+    bool elevated = false;
+    bool backupPrivilege = false;
+    std::uint64_t peakBytes = 0;
+};
+
 void PrintUsage() {
     WriteLine(L"Usage:");
     WriteLine(L"  dirsize-cli scan <path> [--top N] [--json]");
@@ -124,10 +154,12 @@ void PrintUsage() {
     WriteLine(L"  --json    machine-readable output");
 }
 
-void PrintText(const std::wstring& displayPath, const WalkResult& r, double seconds, bool elevated,
-               std::uint64_t peakBytes, const std::vector<const ChildFolder*>& top) {
+void PrintText(const std::wstring& displayPath, const WalkResult& r, const RunInfo& info,
+               const std::vector<const ChildFolder*>& top) {
+    const double seconds = info.seconds;
     WriteLine(Format(L"Path              %s", displayPath.c_str()));
-    WriteLine(Format(L"Elevated          %s", elevated ? L"yes" : L"no"));
+    WriteLine(Format(L"Elevated          %s", info.elevated ? L"yes" : L"no"));
+    WriteLine(Format(L"Backup privilege  %s", info.backupPrivilege ? L"enabled" : L"not available"));
     WriteLine(Format(L"Elapsed           %.3f s", seconds));
     WriteLine(Format(L"Folders           %llu", r.totals.folders));
     WriteLine(Format(L"Files             %llu", r.totals.files));
@@ -138,7 +170,7 @@ void PrintText(const std::wstring& displayPath, const WalkResult& r, double seco
     WriteLine(Format(L"Access denied     %llu", r.accessDenied));
     WriteLine(Format(L"Other errors      %llu", r.otherErrors));
     WriteLine(Format(L"Links skipped     %llu", r.reparsePointsSkipped));
-    WriteLine(Format(L"Peak memory       %s", FormatBytes(peakBytes).c_str()));
+    WriteLine(Format(L"Peak memory       %s", FormatBytes(info.peakBytes).c_str()));
     if (seconds > 0) {
         WriteLine(Format(L"Throughput        %.0f entries/s",
                          static_cast<double>(r.totals.files + r.totals.folders) / seconds));
@@ -155,12 +187,13 @@ void PrintText(const std::wstring& displayPath, const WalkResult& r, double seco
     }
 }
 
-void PrintJson(const std::wstring& displayPath, const WalkResult& r, double seconds, bool elevated,
-               std::uint64_t peakBytes, const std::vector<const ChildFolder*>& top) {
+void PrintJson(const std::wstring& displayPath, const WalkResult& r, const RunInfo& info,
+               const std::vector<const ChildFolder*>& top) {
     WriteLine(L"{");
     WriteLine(Format(L"  \"path\": \"%s\",", JsonEscape(displayPath).c_str()));
-    WriteLine(Format(L"  \"elevated\": %s,", elevated ? L"true" : L"false"));
-    WriteLine(Format(L"  \"elapsedSeconds\": %.3f,", seconds));
+    WriteLine(Format(L"  \"elevated\": %s,", info.elevated ? L"true" : L"false"));
+    WriteLine(Format(L"  \"backupPrivilege\": %s,", info.backupPrivilege ? L"true" : L"false"));
+    WriteLine(Format(L"  \"elapsedSeconds\": %.3f,", info.seconds));
     WriteLine(Format(L"  \"folders\": %llu,", r.totals.folders));
     WriteLine(Format(L"  \"files\": %llu,", r.totals.files));
     WriteLine(Format(L"  \"logicalBytes\": %llu,", r.totals.logicalBytes));
@@ -168,7 +201,7 @@ void PrintJson(const std::wstring& displayPath, const WalkResult& r, double seco
     WriteLine(Format(L"  \"accessDenied\": %llu,", r.accessDenied));
     WriteLine(Format(L"  \"otherErrors\": %llu,", r.otherErrors));
     WriteLine(Format(L"  \"reparsePointsSkipped\": %llu,", r.reparsePointsSkipped));
-    WriteLine(Format(L"  \"peakWorkingSetBytes\": %llu,", peakBytes));
+    WriteLine(Format(L"  \"peakWorkingSetBytes\": %llu,", info.peakBytes));
     WriteLine(L"  \"children\": [");
     for (size_t i = 0; i < top.size(); ++i) {
         const ChildFolder* c = top[i];
@@ -189,9 +222,13 @@ int RunScan(const ScanOptions& options) {
     }
     const std::wstring displayPath = dirsize::ToDisplayPath(extended);
 
+    RunInfo info;
+    info.elevated = IsElevated();
+    info.backupPrivilege = EnableBackupPrivilege();
+
     const auto start = std::chrono::steady_clock::now();
     const WalkResult result = dirsize::WalkTree(extended);
-    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    info.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 
     if (!result.rootOpened) {
         WriteLine(Format(L"error: cannot open %s (Win32 error %lu)", displayPath.c_str(), result.rootError));
@@ -210,12 +247,11 @@ int RunScan(const ScanOptions& options) {
         top.resize(options.top);
     }
 
-    const bool elevated = IsElevated();
-    const std::uint64_t peakBytes = PeakWorkingSetBytes();
+    info.peakBytes = PeakWorkingSetBytes();
     if (options.json) {
-        PrintJson(displayPath, result, seconds, elevated, peakBytes, top);
+        PrintJson(displayPath, result, info, top);
     } else {
-        PrintText(displayPath, result, seconds, elevated, peakBytes, top);
+        PrintText(displayPath, result, info, top);
     }
     return 0;
 }

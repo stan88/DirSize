@@ -83,6 +83,31 @@
 - MFT 類的做法都需要系統管理員權限。為了公平比較，基準也要用提權方式重測，並啟用 `SeBackupPrivilege`，否則提權後仍會有讀不到的資料夾。
 - 硬連結的計算規則還沒決定，目前每個連結各算一次。決定後，第 1 階段和第 2 階段兩種掃描方式要一致。
 
+### 2026-11-03 提權基準：啟用 SeBackupPrivilege
+
+- `src/cli/main.cpp`：啟動時用 `OpenProcessToken` → `LookupPrivilegeValueW(SE_BACKUP_NAME)` → `AdjustTokenPrivileges` 啟用 `SeBackupPrivilege`。
+  - `AdjustTokenPrivileges` 在權限不存在時仍回傳成功，要再檢查 `GetLastError()` 是否為 `ERROR_NOT_ALL_ASSIGNED`。
+  - 文字輸出多一行「Backup privilege」，JSON 多一個 `backupPrivilege` 欄位。
+- 新增 `scripts/bench.ps1`：對整個磁碟連跑數次，JSON 結果存到 `bench-results/`（已加入 `.gitignore`）。
+
+#### 基準數據（2026-11-03，提權執行，Release 版）
+
+測試環境同上一節。三個磁碟的 `backupPrivilege` 都是 `true`。
+
+| 磁碟 | 項目數（檔案＋資料夾） | 第 1 次 | 第 2 次 | 峰值記憶體 | 存取被拒 |
+|---|---|---|---|---|---|
+| C:（NTFS） | 約 148 萬（1,284,605＋199,544） | 15.0 s | 12.7 s | 13.4 MB | 0 |
+| D:（NTFS） | 約 94 萬（823,934＋114,946） | 4.8 s | 4.1 s | 6.3 MB | 0 |
+| P:（exFAT，卸除式） | 約 21 萬（178,520＋29,771） | 11.8 s | 11.1 s | 6.3 MB | 0 |
+
+與未提權基準比較：
+- 存取被拒的資料夾全部歸零（C: 588 → 0，D: 3 → 0）。
+- C: 項目數從約 117 萬增加到約 148 萬。增加的部分有兩個來源：原本讀不到的資料夾，以及前述 Windows Update 下載造成的檔案增加。這次沒有分開量，**無法拆分**各占多少。
+- C: 第 1 次從 45.2 s 變成 15.0 s。兩次測試前的快取狀態不同（都不是冷啟動），所以**不能當成提權讓掃描變快的證據**。
+- 快取已熱時，C: 項目數多了約 27%，時間只從 12.3 s 變成 12.7 s。
+- `System Volume Information` 在 C: 算到 17.5 GB。提權並啟用備份權限後才讀得到。是否要計入總量，留到前端設計時決定。
+- 這組數據是第 2 階段 MFT 類做法的比較基準（同樣需要系統管理員權限）。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -98,4 +123,8 @@
 | cli | [GetProcessMemoryInfo](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo) |
 | cli | [GetTokenInformation / TOKEN_ELEVATION](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation) |
 | cli | [WideCharToMultiByte](https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-widechartomultibyte) |
+| cli | [AdjustTokenPrivileges](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-adjusttokenprivileges) |
+| cli | [LookupPrivilegeValueW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupprivilegevaluew) |
+| cli | [OpenProcessToken](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken) |
+| cli | [Privilege Constants（SE_BACKUP_NAME）](https://learn.microsoft.com/en-us/windows/win32/secauthz/privilege-constants) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
