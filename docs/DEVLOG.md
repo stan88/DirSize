@@ -221,6 +221,19 @@
 
 **結論：`FSCTL_QUERY_FILE_LAYOUT` 算出的資料夾大小正確，可以作為第 2 階段 NTFS 掃描的基礎。**
 
+- **待查**：C: 根目錄直屬檔案（不屬於任何第一層資料夾）兩種方式差約 1.63 GB，新方法較多。**推測**是逐目錄掃描看不到的根目錄系統檔案，尚未證實。這會在第 2 階段的驗證模式中確認。
+
+### 2026-11-03 第 2 階段設計草案
+
+- 設計寫在 [docs/DESIGN-phase2.md](DESIGN-phase2.md)，等使用者確認。
+- 硬連結的比較數據：C: 已用空間 476.7 GB（`Get-Volume` 查詢，比掃描晚幾分鐘）。
+  - 配置大小每個連結各算一次：486.5 GB，**超過**已用空間。
+  - 每個檔案只算一次：470.2 GB。
+  - D: 也一樣：每個連結算一次的合計超過已用空間約 171 MB，每個檔案只算一次則在已用空間之內。
+- 查證 [FSCTL_QUERY_USN_JOURNAL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_query_usn_journal)：對 `\\.\X:` 磁碟區 handle 呼叫，只支援 NTFS。輸出 [USN_JOURNAL_DATA_V0](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_journal_data_v0)，含 `UsnJournalID`、`FirstUsn`、`NextUsn`、`LowestValidUsn`。
+  - 設計上要在掃描前記下 `NextUsn`，第 3 階段從這裡接續。
+  - 文件沒寫需要什麼權限，實作時實測。
+
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
 - 實測：`FSCTL_QUERY_FILE_LAYOUT` 在一般權限下無法使用（錯誤 1）；逐目錄掃描可以用，但讀不到部分資料夾。
@@ -256,4 +269,6 @@
 | 第 2 階段查證 | [OpenFileById](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-openfilebyid) |
 | 第 2 階段查證 | [FILE_ID_DESCRIPTOR](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_descriptor) |
 | 第 2 階段查證 | [FILE_STREAM_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_stream_info) |
+| 第 2 階段設計 | [FSCTL_QUERY_USN_JOURNAL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_query_usn_journal) |
+| 第 2 階段設計 | [USN_JOURNAL_DATA_V0](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_journal_data_v0) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
