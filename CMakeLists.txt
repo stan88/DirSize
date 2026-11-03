@@ -26,3 +26,7 @@ target_include_directories(dirsize_core PUBLIC src)
 
 add_executable(dirsize-cli src/cli/main.cpp)
 target_link_libraries(dirsize-cli PRIVATE dirsize_core psapi)
+
+# Phase 2 feasibility probe (measurement only, not shipped).
+add_executable(layout-probe tools/layout_probe.cpp)
+target_link_libraries(layout-probe PRIVATE psapi)

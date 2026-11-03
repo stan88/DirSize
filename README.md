@@ -1,5 +1,7 @@
 # DirSize
 
+**English** | [繁體中文](README.zh-TW.md)
+
 A fast, low-resource tool for Windows that shows the size of every folder.
 
 > Status: early development — nothing usable yet.
@@ -33,6 +35,10 @@ Requires Visual Studio 2022 with the **Desktop development with C++** workload
 DirSize is an independent implementation written from public Microsoft documentation.
 It is inspired by the idea of the discontinued *Folder Size for Windows* (SourceForge),
 but contains none of its code. See [docs/DEVLOG.md](docs/DEVLOG.md).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the clean-room and privacy rules.
 
 ## License
 

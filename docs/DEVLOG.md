@@ -20,7 +20,7 @@
   - NTFS：用 `FSCTL_ENUM_USN_DATA` 列舉 MFT 建立索引，用 USN Journal 增量更新。
   - 其他格式：逐目錄列舉，搭配 `ReadDirectoryChangesW` 監看。
   - 可以設定要掃描哪些磁碟類型，預設不掃網路磁碟和光碟。
-- **隔離**：舊版 CVS 庫留在 `D:\Project\foldersize`，和本專案分開。
+- **隔離**：舊版 CVS 庫放在本機另一個獨立目錄，和本專案分開（之後已刪除）。
   - 開發前看過舊版架構的人，只會使用公開層級的概念：背景服務加快取、named pipe 查詢、追蹤 Explorer 視窗。
   - 這些概念都不受著作權保護。
 
@@ -46,13 +46,13 @@
   - 輸出時間、檔案數、資料夾數、邏輯大小、磁碟上大小、存取被拒數、峰值記憶體。
   - 以 UTF-8 輸出。
 - **驗證**：
-  - `D:\Project\MediTrack`：檔案 601、位元組 187,570,673、資料夾 197，與 PowerShell `Get-ChildItem -Recurse -Force` 的結果完全一致。
+  - 一個測試用資料夾：檔案 601、位元組 187,570,673、資料夾 197，與 PowerShell `Get-ChildItem -Recurse -Force` 的結果完全一致。
   - 邊界測試：中文名稱、756 字元深層路徑、junction 略過，三項都正確。
 
 #### 基準數據（2026-11-03，未提權執行，Release 版）
 
 測試環境：
-- C:、D: 是 NVMe SSD（Samsung 990 EVO Plus／980），NTFS。
+- C:、D: 是 NVMe SSD，NTFS。
 - P: 是卸除式 exFAT 磁碟。
 
 | 磁碟 | 項目數（檔案＋資料夾） | 第 1 次 | 第 2 次（快取已熱） | 峰值記憶體 | 存取被拒 |
@@ -108,6 +108,100 @@
 - `System Volume Information` 在 C: 算到 17.5 GB。提權並啟用備份權限後才讀得到。是否要計入總量，留到前端設計時決定。
 - 這組數據是第 2 階段 MFT 類做法的比較基準（同樣需要系統管理員權限）。
 
+### 2026-11-03 第 2 階段查證：FSCTL_QUERY_FILE_LAYOUT（文件階段）
+
+文件有寫的：
+- 對**磁碟區 handle** 發出請求。要列出整個磁碟區，就重複呼叫直到回傳 `STATUS_END_OF_FILE`。第一次要帶 `QUERY_FILE_LAYOUT_RESTART`；收到 `STATUS_END_OF_FILE` 之後，要再列一次也要帶它。
+- **ReFS 不支援**。最低版本：控制碼頁面寫 Windows 8.1 Update，結構頁面寫 Windows 8，兩頁不一致。我們的目標是 Windows 10，所以都沒問題。
+- 輸入旗標：`INCLUDE_NAMES`、`INCLUDE_STREAMS`、`INCLUDE_EXTRA_INFO`、`INCLUDE_EXTENTS`（需同時設 STREAMS）、`INCLUDE_STREAMS_WITH_NO_CLUSTERS_ALLOCATED`（包含常駐串流與未配置的屬性，需同時設 STREAMS）。
+  - 小檔案的資料常駐在 MFT 記錄裡，不占叢集。要算這類檔案，**很可能需要設最後這個旗標**。這點要等實測確認。
+- 輸出標頭 `QUERY_FILE_LAYOUT_OUTPUT` 後面接一串 `FILE_LAYOUT_ENTRY`。名稱、串流、額外資訊、extent 等子項目用 offset 串起來，offset 為 0 表示結束。
+- NTFS 一律設 `QUERY_FILE_LAYOUT_SINGLE_INSTANCED`：**每個檔案只回一個 `FILE_LAYOUT_ENTRY`**，每個串流只回一個 `STREAM_LAYOUT_ENTRY`。對硬連結「只算一次」的規則有利。
+- 錯誤碼有 `STATUS_ACCESS_DENIED`（「呼叫者無法存取該磁碟區」）。
+
+文件**沒寫**、仍待確認的：
+- **`FILE_LAYOUT_ENTRY`、`FILE_LAYOUT_NAME_ENTRY`、`FILE_LAYOUT_INFO_ENTRY`、`STREAM_LAYOUT_ENTRY`、`STREAM_EXTENT_ENTRY` 在 Microsoft Learn 上找不到參考頁面**。`ntifs.h` 索引頁只列出 INPUT／OUTPUT 兩個結構。
+  - 所以三個關鍵問題，文件都還答不出來：串流項目有沒有大小欄位、名稱項目有沒有父目錄參照、各欄位的確切配置。
+- 需要哪種權限和開啟方式：文件只寫「磁碟區 handle」，沒寫存取權限或特權。
+- 文件只描述 kernel 端的 `ZwFsControlFile`／`FltFsControlFile` 呼叫方式，沒提到使用者模式的 `DeviceIoControl`。
+
+### 2026-11-03 第 2 階段查證：SDK 標頭檔
+
+使用者同意參考 Microsoft 官方 SDK／WDK 標頭檔（規則已補進 `CLAUDE.md`）。來源：Windows SDK **10.0.26100.0** 的 `um/winioctl.h`，只讀了 `FSCTL_QUERY_FILE_LAYOUT` 這一段的定義。
+
+- `FSCTL_QUERY_FILE_LAYOUT` 定義在**使用者模式**的 `winioctl.h`，存取需求是 `FILE_ANY_ACCESS`。所以應該可以用 `DeviceIoControl` 呼叫，實測確認。
+- **檔案大小有**：`STREAM_LAYOUT_ENTRY`（版本 2）有 `AllocationSize`（配置大小）和 `EndOfFile`（邏輯大小），另有 `AttributeTypeCode` 和 `StreamIdentifier`。旗標 `STREAM_LAYOUT_ENTRY_RESIDENT` 表示常駐串流。
+- **父目錄有**：`FILE_LAYOUT_NAME_ENTRY` 有 `ParentFileReferenceNumber`、檔名（不以 null 結尾），旗標分成 `PRIMARY` 和 `DOS`（8.3 短檔名）。每個硬連結各有一筆名稱項目。
+- `FILE_LAYOUT_ENTRY` 有 `FileReferenceNumber`、`FileAttributes`（可以判斷目錄和 reparse point）、名稱與串流的 offset。
+- 標頭檔對 `INCLUDE_STREAMS_WITH_NO_CLUSTERS_ALLOCATED` 的註解：涵蓋常駐屬性、長度 0 的非常駐屬性、只有稀疏空洞的壓縮／稀疏屬性；只能用在整個磁碟區的查詢。**要算到小檔案，就必須設這個旗標。**
+- 待實測：
+  - `AttributeTypeCode` 的值：SDK 沒有定義各屬性代碼，WDK 也沒安裝。所以先在實測中列出實際出現的代碼和識別字，對照第 1 階段掃描器的結果，判斷哪一種是檔案資料串流。
+  - 需要什麼權限。
+  - 速度與記憶體。
+
+### 2026-11-03 第 2 階段實測程式
+
+- 新增 `tools/layout_probe.cpp`（CMake target `layout-probe`）：只用來量測，不屬於核心，也不會出貨。
+  - 列出整個磁碟區，印出串流統計（代碼、是否常駐、識別字），以及每個第一層資料夾的大小合計。
+  - 合計同時用兩種規則計算：每個連結各算一次（第 1 階段規則）、每個檔案只算一次。
+  - 根目錄 ID 由 `GetFileInformationByHandle` 取得，不寫死。8.3 短檔名（旗標只有 `DOS`）不計，避免重複。
+- 新增 `scripts/layout-probe.ps1`：對 C:、D: 各跑兩次，輸出存到 `bench-results/`。
+- **未提權試跑（D:）**：
+  - 用 `GENERIC_READ` 開磁碟區，錯誤 5（存取被拒）。
+  - 用 `FILE_READ_ATTRIBUTES` 開得了，但 `DeviceIoControl(FSCTL_QUERY_FILE_LAYOUT)` 回傳錯誤 1（`ERROR_INVALID_FUNCTION`）。
+  - 所以**一般權限不能用**，至少要提權。
+
+#### 提權實測（2026-11-03，C:、D: 各兩次）
+
+第一次提權執行：NTFS 回傳的 `STREAM_LAYOUT_ENTRY` 是**第 1 版**，但 SDK 只定義第 2 版。程式遇到版本不符就停下，所以沒有結果。
+
+改成用有文件記載的 API 驗證：
+- 用 `OpenFileById` 開啟抽樣檔案，再用 `GetFileInformationByHandleEx(FileStreamInfo)` 讀出每個串流的名稱、大小、配置大小，當作標準答案。
+- 第 1 版的項目先套用第 2 版的欄位位置解讀，再拿來比對。
+
+**欄位配置驗證結果：**
+- 抽樣 D: 423 個、C: 523 個（含 C: 100 個壓縮檔、兩顆磁碟各 29 個稀疏檔、各 100 個多串流檔）。
+- 全部和標準答案一致：每個串流的 `EndOfFile`、`AllocationSize` 都相符，0 個不符。
+- 另有 7 個檔案無法用 `OpenFileById` 開啟（錯誤 2、5、87），不在比對範圍內。
+- 結論：**第 1 版的大小欄位位置與 SDK 第 2 版相同**（`AllocationSize`@16、`EndOfFile`@24）。只驗證了大小欄位；屬性代碼和識別字的位置，是從 hex dump 和比對結果間接確認的。
+- 加上 `INCLUDE_STREAM_INFORMATION` 旗標後，回傳的仍是第 1 版。
+- 檔案資料串流：屬性代碼 `0x80`、識別字為空。這是從比對結果判斷的，不是推測：522／523 個 `::$DATA` 都對應到它。
+  - 剩下 1 個對應到代碼 `0x30`，判斷是大小剛好相同的巧合。
+  - 其他屬性帶有檔案系統自己給的識別字，例如 `::$STANDARD_INFORMATION`、`::$FILE_NAME`，可以直接看出是哪種屬性。
+- 命名串流（ADS）也是代碼 `0x80`，識別字不為空。
+- 兩顆磁碟都沒有找不到上層資料夾的孤兒連結；C: 有 813,597 個 8.3 短檔名被略過（D: 沒有）。
+
+**和第 1 版逐目錄掃描（提權）比對各第一層資料夾的邏輯大小：**
+- D:：10 個第一層資料夾中，9 個**位元組完全一致**，配置大小也一致。
+  - 剩下 1 個是開發用的專案資料夾，差 2,667,656 位元組。量測期間在裡面編譯程式，內容本來就在變。
+- C:：
+  - Program Files (x86) 幾乎一致：邏輯 10,847,006,171 對 10,846,975,856，配置 9,660,526,904 對 9,660,495,096。**壓縮檔的配置大小算法正確。**
+  - Windows 少 2.3 GB，Users 少 1.0 GB，另有幾個資料夾（ProgramData、System Volume Information 等）有增減。
+  - 兩次量測隔了約 35 分鐘，C: 內容在這段時間有變動（之前已觀察到 Windows Update 在下載）。所以**差異的原因還不能確定**，要做「同一時間連續跑兩種掃描、比對各資料夾檔案數」才能確認。
+- 硬連結：C: 有 47,790 個檔案有多個連結。
+  - 每個連結各算一次：492.3 GB。每個檔案只算一次：475.2 GB。差 17 GB。
+- 命名串流（ADS）：使用者資料夾裡的總量很小（Program Files (x86) 約 322 MB 最多）。但中繼檔案有非常大的稀疏命名串流：
+  - D: 根目錄有 8 個，合計約 1 TB。
+  - `$Extend` 裡 C: 有 18.8 GB，D: 有 62.6 GB，**很可能**是 USN 日誌。
+  - 這些都不能直接算進總量。第 1 版掃描本來就不包含 ADS。
+
+**速度與記憶體：**
+
+| 磁碟 | 第 1 次 | 第 2 次 | 第 1 版逐目錄（提權，熱快取） |
+|---|---|---|---|
+| C: | 4.49 s | 4.63 s | 12.7 s |
+| D: | 17.5 s | 4.57 s | 4.1 s |
+
+- 上表「第 1 次／第 2 次」是 pass 1 的列舉時間。只計列舉，不含後面的比對和加總。
+- C: 快了約 2.8 倍。D: 熱快取時和逐目錄差不多。D: 第 1 次 17.5 s，**推測**是 MFT 資料還不在快取裡，尚未驗證。
+- 峰值記憶體 C: 463 MB、D: 309 MB。這是因為實測程式把每個檔案都存成 `unordered_map` 加 `vector`／`wstring`，**不代表正式版的記憶體用量**。第 2 階段必須設計緊湊的資料結構。
+
+**待決定／待驗證：**
+- 硬連結規則：每個連結各算一次，或每個檔案只算一次。C: 兩者差 17 GB。
+- 中繼檔案（`$` 開頭）和命名串流要不要計入。
+- C: 各資料夾差異的原因：同一時間連續跑兩種掃描，比對各資料夾檔案數。
+- 冷快取速度：要重開機後測。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -127,4 +221,11 @@
 | cli | [LookupPrivilegeValueW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupprivilegevaluew) |
 | cli | [OpenProcessToken](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken) |
 | cli | [Privilege Constants（SE_BACKUP_NAME）](https://learn.microsoft.com/en-us/windows/win32/secauthz/privilege-constants) |
+| 第 2 階段查證 | [FSCTL_QUERY_FILE_LAYOUT](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/fsctl-query-file-layout) |
+| 第 2 階段查證 | [QUERY_FILE_LAYOUT_INPUT](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_query_file_layout_input) |
+| 第 2 階段查證 | [QUERY_FILE_LAYOUT_OUTPUT](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_query_file_layout_output) |
+| 第 2 階段查證 | Windows SDK 10.0.26100.0 `um/winioctl.h`：`FSCTL_QUERY_FILE_LAYOUT` 段落（`FILE_LAYOUT_ENTRY`、`FILE_LAYOUT_NAME_ENTRY`、`FILE_LAYOUT_INFO_ENTRY`、`STREAM_LAYOUT_ENTRY`、各旗標） |
+| 第 2 階段查證 | [OpenFileById](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-openfilebyid) |
+| 第 2 階段查證 | [FILE_ID_DESCRIPTOR](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_descriptor) |
+| 第 2 階段查證 | [FILE_STREAM_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_stream_info) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
