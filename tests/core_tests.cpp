@@ -460,6 +460,10 @@ void TestLayoutBuilder() {
     CHECK_EQ(index.excluded.surrogateReparseDirs, 1);
     CHECK_EQ(index.excluded.unreachableFolders, 1);
     CHECK_EQ(index.excluded.unreachableFiles, 2);
+    CHECK(index.unreachableFileSamples.size() == 2 && index.unreachableFileSamples[0].id == 304 &&
+          index.unreachableFileSamples[0].parentId == 700 && index.unreachableFileSamples[1].id == 305 &&
+          index.unreachableFileSamples[1].parentId == 8888);
+    CHECK(index.followedReparseDirIds.size() == 1 && index.followedReparseDirIds[0] == 500);
     CHECK_EQ(index.excluded.namedStreams, 1);
     CHECK_EQ(index.excluded.namedStreamLogicalBytes, 7);
     CHECK_EQ(index.issues.malformedEntries, 1);

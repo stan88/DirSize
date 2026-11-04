@@ -18,7 +18,7 @@ void CountError(ScanIssues& issues, DWORD error) {
 
 // True when the folder reparse point at `path` is followed: its tag can be
 // read and is not a name surrogate (junction, symlink, mount point).
-bool ShouldFollowReparseDir(const std::wstring& path, VolumeIndex& index) {
+bool ShouldFollowReparseDir(const std::wstring& path, std::uint64_t id, VolumeIndex& index) {
     HANDLE h = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     DWORD tag = 0;
@@ -34,7 +34,7 @@ bool ShouldFollowReparseDir(const std::wstring& path, VolumeIndex& index) {
         ++index.excluded.surrogateReparseDirs;
         return false;
     }
-    CountFollowedReparseTag(index, tag);
+    CountFollowedReparseTag(index, tag, id);
     return true;
 }
 
@@ -69,7 +69,7 @@ WalkIndexResult BuildIndexByWalking(const std::wstring& extendedRoot) {
         const DWORD error = lister.List(dir, [&](const ListedItem& item) {
             if (item.attributes & FILE_ATTRIBUTE_DIRECTORY) {
                 std::wstring childPath = JoinPath(path, item.name);
-                if ((item.attributes & FILE_ATTRIBUTE_REPARSE_POINT) && !ShouldFollowReparseDir(childPath, index)) {
+                if ((item.attributes & FILE_ATTRIBUTE_REPARSE_POINT) && !ShouldFollowReparseDir(childPath, item.id, index)) {
                     return;
                 }
                 DirEntry child;

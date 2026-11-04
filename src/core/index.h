@@ -105,6 +105,15 @@ struct ReparseTagCount {
     std::uint64_t folders = 0;
 };
 
+// A file whose parent folder could not be found, kept for diagnosis.
+struct UnreachableSample {
+    std::uint64_t id = 0;
+    std::uint64_t parentId = 0;  // of its first link; 0 when it has no link
+};
+
+// Diagnostic samples are capped at this many entries each.
+constexpr size_t kMaxSamples = 32;
+
 struct VolumeIndex {
     std::vector<FileEntry> files;
     std::vector<ExtraLink> extraLinks;
@@ -119,6 +128,9 @@ struct VolumeIndex {
     // Folder reparse points that are not name surrogates and were followed,
     // by tag (e.g. cloud-file folders).
     std::vector<ReparseTagCount> followedReparseTags;
+    // Diagnostic samples (at most kMaxSamples each).
+    std::vector<std::uint64_t> followedReparseDirIds;
+    std::vector<UnreachableSample> unreachableFileSamples;
     // NTFS engine: root-listing IDs found among the layout's root children.
     std::uint64_t rootListingMatched = 0;
 
@@ -130,11 +142,12 @@ struct VolumeIndex {
     std::uint64_t MemoryBytes() const;
 };
 
+// Counts one followed folder reparse point under its tag and keeps its ID
+// as a diagnostic sample.
+void CountFollowedReparseTag(VolumeIndex& index, std::uint32_t tag, std::uint64_t folderId);
+
 // Appends a folder name to the name pool and returns its offset. Names longer
 // than 65535 code units are truncated (NTFS names are at most 255).
-// Counts one followed folder reparse point under its tag.
-void CountFollowedReparseTag(VolumeIndex& index, std::uint32_t tag);
-
 std::uint32_t AddName(VolumeIndex& index, std::wstring_view name, std::uint16_t& length);
 
 // Depth of every folder below `root` (root = 0), following DirEntry::parent.

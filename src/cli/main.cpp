@@ -325,17 +325,164 @@ std::int64_t Diff(std::uint64_t a, std::uint64_t b) {
     return static_cast<std::int64_t>(a) - static_cast<std::int64_t>(b);
 }
 
+// Full path of a folder in the index; rootPath ends with a backslash.
+std::wstring PathOf(const VolumeIndex& index, DirIndex dir, const std::wstring& rootPath) {
+    std::vector<DirIndex> chain;
+    for (DirIndex d = dir; d != kNoDir && d != index.root; d = index.dirs[d].parent) chain.push_back(d);
+    std::wstring path = rootPath;
+    for (size_t i = chain.size(); i-- > 0;) {
+        path += index.Name(chain[i]);
+        if (i != 0) path += L'\\';
+    }
+    return path;
+}
+
+DirIndex FindDirById(const VolumeIndex& index, std::uint64_t id) {
+    if (index.sortedById) {
+        auto it = std::lower_bound(index.dirs.begin(), index.dirs.end(), id,
+                                   [](const dirsize::DirEntry& d, std::uint64_t value) { return d.id < value; });
+        return (it != index.dirs.end() && it->id == id) ? static_cast<DirIndex>(it - index.dirs.begin()) : kNoDir;
+    }
+    for (DirIndex i = 0; i < index.dirs.size(); ++i) {
+        if (index.dirs[i].id == id) return i;
+    }
+    return kNoDir;
+}
+
+// Size of a file read from an open handle (FileStandardInfo), the file's
+// own current size, to tell which of the two engines is right.
+std::wstring CurrentSize(const std::wstring& folder, std::wstring_view name) {
+    std::wstring path = folder;
+    if (path.back() != L'\\') path += L'\\';
+    path += name;
+    HANDLE h = CreateFileW(dirsize::ToExtendedPath(path).c_str(), FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return Format(L"(cannot open: error %lu)", GetLastError());
+    FILE_STANDARD_INFO info{};
+    const bool ok = GetFileInformationByHandleEx(h, FileStandardInfo, &info, sizeof(info)) != 0;
+    const DWORD error = GetLastError();
+    CloseHandle(h);
+    if (!ok) return Format(L"(FileStandardInfo failed: error %lu)", error);
+    return Format(L"%lld B (on disk %lld B)", info.EndOfFile.QuadPart, info.AllocationSize.QuadPart);
+}
+
+// Lists `path` and compares each file in it, by file ID, with the layout
+// index's files in `dir`. Prints at most `maxLines` differing files.
+void CompareFilesIn(const std::wstring& path, const VolumeIndex& layout, DirIndex dir, const std::wstring& indent,
+                    size_t maxLines, bool summary) {
+    struct Sizes {
+        std::uint64_t logical, allocated;
+    };
+    std::unordered_map<std::uint64_t, Sizes> inLayout;
+    for (const auto& f : layout.files) {
+        if (f.dir == dir) inLayout[f.id] = {f.logicalBytes, f.allocatedBytes};
+    }
+    for (const auto& x : layout.extraLinks) {
+        const auto& f = layout.files[x.file];
+        if (x.dir == dir) inLayout[f.id] = {f.logicalBytes, f.allocatedBytes};
+    }
+    HANDLE h = dirsize::OpenDirectoryForListing(dirsize::ToExtendedPath(path).c_str());
+    if (h == INVALID_HANDLE_VALUE) {
+        WriteLine(Format(L"%scannot list folder: error %lu", indent.c_str(), GetLastError()));
+        return;
+    }
+    dirsize::DirectoryLister lister;
+    std::uint64_t listed = 0, same = 0, differing = 0;
+    auto line = [&](const std::wstring& text) {
+        if (++differing <= maxLines) WriteLine(indent + text);
+    };
+    lister.List(h, [&](const dirsize::ListedItem& item) {
+        if (item.attributes & FILE_ATTRIBUTE_DIRECTORY) return;
+        ++listed;
+        auto it = inLayout.find(item.id);
+        if (it == inLayout.end()) {
+            line(Format(L"%s: listed (%llu B, on disk %llu B) but not in layout", std::wstring(item.name).c_str(),
+                        item.logicalBytes, item.allocatedBytes));
+            return;
+        }
+        if (it->second.logical != item.logicalBytes || it->second.allocated != item.allocatedBytes) {
+            line(Format(L"%s: listing %llu B (on disk %llu B), layout %llu B (on disk %llu B), now %s, attributes 0x%lx",
+                        std::wstring(item.name).c_str(), item.logicalBytes, item.allocatedBytes, it->second.logical,
+                        it->second.allocated, CurrentSize(path, item.name).c_str(),
+                        static_cast<unsigned long>(item.attributes)));
+        } else {
+            ++same;
+        }
+        inLayout.erase(it);
+    });
+    CloseHandle(h);
+    for (const auto& [id, sizes] : inLayout) {
+        line(Format(L"id 0x%016llx: in layout (%llu B, on disk %llu B) but not listed", id, sizes.logical,
+                    sizes.allocated));
+    }
+    if (differing > maxLines) {
+        WriteLine(Format(L"%s... %llu more differing files", indent.c_str(), differing - maxLines));
+    }
+    if (summary) WriteLine(Format(L"%sFiles listed %llu, same size %llu", indent.c_str(), listed, same));
+}
+
+// Path of a file or folder by ID (OpenFileById, GetFinalPathNameByHandleW).
+std::wstring PathById(HANDLE hint, std::uint64_t id) {
+    FILE_ID_DESCRIPTOR descriptor{};
+    descriptor.dwSize = sizeof(descriptor);
+    descriptor.Type = FileIdType;
+    descriptor.FileId.QuadPart = static_cast<LONGLONG>(id);
+    HANDLE h = OpenFileById(hint, &descriptor, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            nullptr, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    if (h == INVALID_HANDLE_VALUE) return Format(L"(cannot open by ID: error %lu)", GetLastError());
+    std::wstring path(1024, L'\0');
+    const DWORD n = GetFinalPathNameByHandleW(h, path.data(), static_cast<DWORD>(path.size()), FILE_NAME_NORMALIZED);
+    const DWORD error = GetLastError();
+    CloseHandle(h);
+    if (n == 0 || n >= path.size()) return Format(L"(no path: error %lu)", error);
+    path.resize(n);
+    return path;
+}
+
+// Attributes and reparse tag of a path, opened without following reparse points.
+std::wstring DescribePath(const std::wstring& path) {
+    HANDLE h = CreateFileW(dirsize::ToExtendedPath(path).c_str(), FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return Format(L"cannot open: error %lu", GetLastError());
+    FILE_ATTRIBUTE_TAG_INFO info{};
+    const bool ok = GetFileInformationByHandleEx(h, FileAttributeTagInfo, &info, sizeof(info)) != 0;
+    const DWORD error = GetLastError();
+    CloseHandle(h);
+    if (!ok) return Format(L"FileAttributeTagInfo failed: error %lu", error);
+    return Format(L"attributes 0x%08lx, tag 0x%08lx", info.FileAttributes, info.ReparseTag);
+}
+
+void PrintDiagnostics(const wchar_t* engine, const VolumeIndex& index, const std::wstring& rootPath, HANDLE rootHandle) {
+    WriteLine(Format(L"  %s: followed reparse folders (sample of %zu)", engine, index.followedReparseDirIds.size()));
+    for (std::uint64_t id : index.followedReparseDirIds) {
+        const DirIndex d = FindDirById(index, id);
+        const std::wstring path = d == kNoDir ? PathById(rootHandle, id) : PathOf(index, d, rootPath);
+        WriteLine(Format(L"    %s: %s", path.c_str(), DescribePath(path).c_str()));
+    }
+    if (index.unreachableFileSamples.empty()) return;
+    WriteLine(Format(L"  %s: unreachable files (sample of %zu)", engine, index.unreachableFileSamples.size()));
+    for (const auto& u : index.unreachableFileSamples) {
+        WriteLine(Format(L"    id 0x%016llx: %s", u.id, PathById(rootHandle, u.id).c_str()));
+        const std::wstring parent = u.parentId == 0 ? std::wstring(L"(no link)") : PathById(rootHandle, u.parentId);
+        WriteLine(Format(L"      parent id 0x%016llx: %s", u.parentId, parent.c_str()));
+    }
+}
+
 struct Comparer {
     const VolumeIndex& layout;
     const VolumeIndex& walk;
+    const std::wstring& rootPath;
     std::uint64_t differingFolders = 0;
     std::uint64_t onlyInLayout = 0;
     std::uint64_t onlyInWalk = 0;
-    static constexpr int kMaxDepth = 6;
+    static constexpr int kMaxDepth = 14;
     static constexpr std::int64_t kBytesShown = 1 << 20;
 
     bool Differs(const Totals& a, const Totals& b) const {
-        return a.files != b.files || a.folders != b.folders || a.logicalBytes != b.logicalBytes;
+        return a.files != b.files || a.folders != b.folders || a.logicalBytes != b.logicalBytes ||
+               a.allocatedBytes != b.allocatedBytes;
     }
 
     // Compares the children of two matching folders; drills into the worst.
@@ -367,11 +514,13 @@ struct Comparer {
             const std::int64_t db = Diff(lt.logicalBytes, wt.logicalBytes);
             const std::int64_t df = Diff(lt.files, wt.files);
             const std::int64_t dd = Diff(lt.folders, wt.folders);
-            if (df != 0 || dd != 0 || db > kBytesShown || db < -kBytesShown || level == 0) {
-                WriteLine(Format(L"%s[%s] layout-walk: files %+lld, folders %+lld, bytes %+lld", indent.c_str(),
-                                 std::wstring(layout.Name(c)).c_str(), df, dd, db));
+            const std::int64_t da = Diff(lt.allocatedBytes, wt.allocatedBytes);
+            if (df != 0 || dd != 0 || std::llabs(db) > kBytesShown || std::llabs(da) > kBytesShown || level == 0) {
+                WriteLine(Format(L"%s[%s] layout-walk: files %+lld, folders %+lld, bytes %+lld, on disk %+lld",
+                                 indent.c_str(), std::wstring(layout.Name(c)).c_str(), df, dd, db, da));
             }
-            differing.push_back({c, wc, std::llabs(db) + (std::llabs(df) + std::llabs(dd)) * 4096});
+            differing.push_back(
+                {c, wc, std::max(std::llabs(db), std::llabs(da)) + (std::llabs(df) + std::llabs(dd)) * 4096});
         }
         for (const auto& [name, wc] : walkChildren) {
             ++onlyInWalk;
@@ -381,9 +530,13 @@ struct Comparer {
         }
         const Totals ld = DirectTotals(layout, l);
         const Totals wd = DirectTotals(walk, w);
-        if (ld.files != wd.files || ld.logicalBytes != wd.logicalBytes) {
-            WriteLine(Format(L"%s(files directly here) layout-walk: files %+lld, bytes %+lld", indent.c_str(),
-                             Diff(ld.files, wd.files), Diff(ld.logicalBytes, wd.logicalBytes)));
+        if (ld.files != wd.files || ld.logicalBytes != wd.logicalBytes || ld.allocatedBytes != wd.allocatedBytes) {
+            WriteLine(Format(L"%s(files directly here) layout-walk: files %+lld, bytes %+lld, on disk %+lld",
+                             indent.c_str(), Diff(ld.files, wd.files), Diff(ld.logicalBytes, wd.logicalBytes),
+                             Diff(ld.allocatedBytes, wd.allocatedBytes)));
+            // Names the differing files; the folder is listed again now, so
+            // files that changed since the walk may also show up.
+            if (l != layout.root) CompareFilesIn(PathOf(layout, l, rootPath), layout, l, indent + L"  ", 5, false);
         }
         if (level >= kMaxDepth) return;
         std::sort(differing.begin(), differing.end(), [](const Pair& a, const Pair& b) { return a.weight > b.weight; });
@@ -393,47 +546,6 @@ struct Comparer {
         }
     }
 };
-
-// Lists the root folder and compares each file in it with the layout index,
-// so differences in root files are named, not just summed.
-void CompareRootFiles(const std::wstring& rootPath, const VolumeIndex& layout) {
-    std::unordered_map<std::uint64_t, std::uint64_t> layoutRoot;  // id -> logical bytes
-    for (const auto& f : layout.files) {
-        if (f.dir == layout.root) layoutRoot[f.id] = f.logicalBytes;
-    }
-    for (const auto& x : layout.extraLinks) {
-        if (x.dir == layout.root) layoutRoot[layout.files[x.file].id] = layout.files[x.file].logicalBytes;
-    }
-    HANDLE dir = dirsize::OpenDirectoryForListing(rootPath.c_str());
-    if (dir == INVALID_HANDLE_VALUE) {
-        WriteLine(Format(L"  cannot list %s: error %lu", rootPath.c_str(), GetLastError()));
-        return;
-    }
-    dirsize::DirectoryLister lister;
-    std::uint64_t listed = 0, same = 0;
-    lister.List(dir, [&](const dirsize::ListedItem& item) {
-        if (item.attributes & FILE_ATTRIBUTE_DIRECTORY) return;
-        ++listed;
-        auto it = layoutRoot.find(item.id);
-        if (it == layoutRoot.end()) {
-            WriteLine(Format(L"  %s: listed (%llu B) but not in layout", std::wstring(item.name).c_str(),
-                             item.logicalBytes));
-            return;
-        }
-        if (it->second != item.logicalBytes) {
-            WriteLine(Format(L"  %s: listing %llu B, layout %llu B", std::wstring(item.name).c_str(), item.logicalBytes,
-                             it->second));
-        } else {
-            ++same;
-        }
-        layoutRoot.erase(it);
-    });
-    CloseHandle(dir);
-    for (const auto& [id, bytes] : layoutRoot) {
-        WriteLine(Format(L"  id 0x%016llx: in layout (%llu B) but not listed", id, bytes));
-    }
-    WriteLine(Format(L"  Root files listed %llu, same size %llu", listed, same));
-}
 
 int RunVerify(const wchar_t* driveArg) {
     if (!iswalpha(driveArg[0]) || (driveArg[1] != L'\0' && driveArg[1] != L':')) {
@@ -501,13 +613,21 @@ int RunVerify(const wchar_t* driveArg) {
     WriteLine(Format(L"  Whole volume: files %+lld, folders %+lld, bytes %+lld, on disk %+lld", Diff(lt.files, wt.files),
                      Diff(lt.folders, wt.folders), Diff(lt.logicalBytes, wt.logicalBytes),
                      Diff(lt.allocatedBytes, wt.allocatedBytes)));
-    Comparer comparer{ntfs.index, walk.index};
+    Comparer comparer{ntfs.index, walk.index, rootPath};
     comparer.Compare(ntfs.index.root, walk.index.root, 0);
     WriteLine(Format(L"  Differing folders %llu, only in layout %llu, only in walk %llu", comparer.differingFolders,
                      comparer.onlyInLayout, comparer.onlyInWalk));
     WriteLine();
     WriteLine(L"== Files directly in the root");
-    CompareRootFiles(rootPath, ntfs.index);
+    CompareFilesIn(rootPath, ntfs.index, ntfs.index.root, L"  ", SIZE_MAX, true);
+    WriteLine();
+    WriteLine(L"== Diagnostics");
+    {
+        HANDLE rootHandle = dirsize::OpenDirectoryForListing(rootPath.c_str());
+        PrintDiagnostics(L"NTFS engine", ntfs.index, rootPath, rootHandle);
+        PrintDiagnostics(L"Walker engine", walk.index, rootPath, rootHandle);
+        if (rootHandle != INVALID_HANDLE_VALUE) CloseHandle(rootHandle);
+    }
     WriteLine();
     WriteLine(Format(L"Result: %s", comparer.Differs(lt, wt) ? L"DIFFERENT (see above)"
                                                     : L"IDENTICAL totals"));

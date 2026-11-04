@@ -10,7 +10,10 @@ std::uint64_t VolumeIndex::MemoryBytes() const {
            dirs.capacity() * sizeof(DirEntry) + names.capacity() * sizeof(wchar_t);
 }
 
-void CountFollowedReparseTag(VolumeIndex& index, std::uint32_t tag) {
+void CountFollowedReparseTag(VolumeIndex& index, std::uint32_t tag, std::uint64_t folderId) {
+    if (index.followedReparseDirIds.size() < kMaxSamples) {
+        index.followedReparseDirIds.push_back(folderId);
+    }
     for (ReparseTagCount& t : index.followedReparseTags) {
         if (t.tag == tag) {
             ++t.folders;

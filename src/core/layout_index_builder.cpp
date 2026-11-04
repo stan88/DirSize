@@ -123,7 +123,7 @@ VolumeIndex LayoutIndexBuilder::Finish(std::uint64_t rootId, std::vector<std::ui
                 ++index.excluded.surrogateReparseDirs;
                 continue;
             }
-            CountFollowedReparseTag(index, tag);
+            CountFollowedReparseTag(index, tag, dirs_[i].id);
         }
         visible[i] = 1;
     }
@@ -203,6 +203,9 @@ VolumeIndex LayoutIndexBuilder::Finish(std::uint64_t rootId, std::vector<std::ui
                 ++t.files;
             } else {
                 ++index.excluded.unreachableFiles;
+                if (index.unreachableFileSamples.size() < kMaxSamples) {
+                    index.unreachableFileSamples.push_back({f.id, f.linkCount ? links_[f.firstLink] : 0});
+                }
             }
             continue;
         }

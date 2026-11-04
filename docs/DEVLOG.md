@@ -240,7 +240,7 @@
 - 新增核心模組：`index`（資料結構與彙總）、`layout_parser`（版面輸出解析，純解析、無 I/O）、`layout_index_builder`、`ntfs_index`、`walk_index`、`dir_listing`。第 1 階段的 `dir_walker` 保留給 `scan`。
 - 逐目錄掃描改用 [FileIdBothDirectoryInfo](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_both_dir_info)：同時取得 64 位元檔案 ID，NTFS 掃描的根目錄判斷也用同一個函式。檔案系統不支援時退回 `FileFullDirectoryInfo`。文件說明 FAT 的檔案 ID 可能隨重組改變，所以逐目錄掃描用掃描路徑本身連結上層，ID 只當資料保存。
 - **資料夾 reparse point 的規則改變**：第 1 階段略過所有資料夾 reparse point。現在只略過 [IsReparseTagNameSurrogate](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-isreparsetagnamesurrogate) 為真的（文件：代表系統中另一個具名項目，例如掛載的資料夾，包括 junction 和符號連結）。其他種類（例如雲端檔案的資料夾）裡面是真的檔案，檔案總管也會顯示，所以計入。標記用 [FILE_ATTRIBUTE_TAG_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_attribute_tag_info)（`FileAttributeTagInfo`）讀取；讀不到時當作不跟隨。
-- 測試：`tests/core_tests.cpp`，120 項檢查，不需提權。包含解析器的每一種截斷長度、錯誤 offset、未知版本、負數大小，以及一個真實的暫存資料夾（硬連結、隱藏系統檔、命名串流、junction）。也確認列舉回傳的檔案 ID 等於開啟 handle 後 `GetFileInformationByHandle` 的 ID，也就是版面資料用的 ID。
+- 測試：`tests/core_tests.cpp`，122 項檢查，不需提權。包含解析器的每一種截斷長度、錯誤 offset、未知版本、負數大小，以及一個真實的暫存資料夾（硬連結、隱藏系統檔、命名串流、junction）。也確認列舉回傳的檔案 ID 等於開啟 handle 後 `GetFileInformationByHandle` 的 ID，也就是版面資料用的 ID。
 - AddressSanitizer：CMake 選項 `DIRSIZE_ASAN`。依 [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) 與 [ASan 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building)：`/MT` 可用，但 VS 17.7 起執行檔需要 `clang_rt.asan_dynamic-x86_64.dll`（在 MSVC 工具的 bin 資料夾）。ASan 版測試 0 個錯誤。
 - `dirsize-cli verify X:`：兩種引擎各建一次索引，逐資料夾比對，並逐一比對根目錄直屬檔案（用來查 1.63 GB 落差）。排除量分成「根目錄列舉看不到的檔案」和「隱藏資料夾底下的檔案」兩類。也輸出跟隨的 reparse 種類、根目錄 ID 對到幾個、索引表格大小與程序記憶體。`scripts/verify.ps1` 需在提權的 PowerShell 執行。
 
@@ -276,6 +276,42 @@
 - C: 有 1 個資料夾帶 reparse 屬性，但讀到的標記是 `0x00000000`，兩種掃描都跟隨了它。還不知道是哪個資料夾。
 - 兩顆磁碟各有 4 個找不到上層資料夾的檔案（unreachable），還沒查是哪些。
 - 冷快取速度：D: 的 NTFS 掃描這次 19.25 s，比逐目錄還慢，但兩者快取狀態不同，要重開機後分別測。
+
+**`verify` 補強（為了查上面的項目）：**
+- 逐資料夾比對也比配置大小，往下鑽時取邏輯大小差和配置大小差較大的一個。
+- 「直屬檔案」有差異的資料夾，重新列舉一次，逐一列出不同的檔案（每個資料夾最多 5 個）和屬性。
+- 新增「Diagnostics」段落：列出跟隨的 reparse 資料夾路徑、屬性和標記，以及找不到上層資料夾的檔案和其上層 ID 的路徑（[OpenFileById](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-openfilebyid)＋[GetFinalPathNameByHandleW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew)）。索引只保留最多 32 筆樣本。
+
+#### 第二次驗證（2026-11-03，補強後的 `verify`）
+
+- **逐目錄掃描回報的大小會落後**：差異的檔案幾乎都是記錄檔、`.etl`、`.tmp`、資料庫 `-wal` 這類寫入中的檔案。很多檔案目錄列舉回報 0 B，版面資料是實際大小，例如：
+  - 資料庫伺服器的錯誤記錄檔：列舉 0 B，版面 95,080 B。
+  - 系統 `LogFiles\WMI` 的一個 `.etl`：列舉 262,144 B，版面 16,777,216 B。
+  - 所以兩邊差異不是 NTFS 掃描算錯，而是逐目錄掃描讀到的目錄項目大小比較舊。檔案本身目前的大小哪邊對，下一版 `verify` 用 `FileStandardInfo` 直接讀檔案來確認。
+- **C: 配置大小差 +1.21 GB**（這次）：其中 +830 MB 在 `Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows` 底下，邏輯大小只差 0.88 MB。比對最多只往下 6 層，沒看到是哪些檔案，下一版改成 14 層。
+- **System Volume Information 的 −224 MiB 這次沒有出現**，判斷是當時正在變動的檔案。
+- **標記 0 的 reparse 資料夾**：在使用者 Temp 底下一個即時通訊軟體的暫存資料夾。掃描時兩種方式都看到 reparse 屬性，但用 handle 讀到的屬性只有 `0x10`（資料夾）、標記 0。照規則當作一般資料夾計入，結果正確；為什麼屬性不一致還沒查文件。
+- **找不到上層資料夾的 4 個檔案**：兩顆磁碟都是 ID `0x0c`～`0x0f`（序號等於記錄號），沒有任何名稱，用 ID 開啟回傳錯誤 5。它們沒有名稱，不屬於任何資料夾，排除是對的。
+- D:：檔案數、資料夾數完全一致。這次另外看到一個 pnpm `node_modules` 資料夾邏輯大小相同、配置大小差 2.7 MB（pnpm 大量使用硬連結），同樣受 6 層限制看不到檔案。
+- 掃描期間有檔案被替換（同名但 ID 不同：列舉看得到的 ID 不在版面資料裡，版面資料的舊 ID 也不在列舉裡），屬於正常變動。
+
+**`verify` 再補強**：有差異的檔案多印「now」，也就是開啟檔案後 [FILE_STANDARD_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_standard_info)（`FileStandardInfo`）讀到的目前大小；往下比對的層數從 6 改成 14。
+
+#### 第三次驗證（2026-11-03，加上「now」）
+
+有差異的檔案中，開啟檔案讀到的目前大小（`FileStandardInfo`）：
+
+| 磁碟 | 和 NTFS 掃描相同 | 和逐目錄掃描相同 | 都不同 |
+|---|---|---|---|
+| C: | 138 | 0 | 5 |
+| D: | 82 | 0 | 0 |
+
+- 「都不同」的 5 個都是寫入中的記錄檔，目前大小比兩次掃描都大。
+- **結論：NTFS 掃描的大小和檔案本身一致；逐目錄掃描讀到的目錄項目大小會落後，常常是 0 B。** 兩種掃描的差異來自逐目錄掃描，不是 NTFS 掃描算錯。這也代表沒有管理員權限時的逐目錄掃描，對寫入中的檔案會少算。
+- **C: 那 830 MB 配置大小**：是系統傳遞最佳化（Delivery Optimization）快取裡的 3 個 `content.bin`。屬性 `0x220`（稀疏檔）。逐目錄掃描回報配置 0 B；NTFS 掃描和開啟檔案讀到的一樣，例如 533,790,720 B。
+- **D: pnpm 的 2.7 MB**：數百個幾百位元組的小檔案，逐目錄掃描回報的配置大小約等於檔案大小（例如 440 B），NTFS 掃描和開啟檔案讀到的都是 4,096 B。
+
+第 2 階段核心的 NTFS 掃描結果，可以視為正確。剩下沒查的：標記 0 的 reparse 資料夾為什麼屬性前後不一致、冷快取速度。
 
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
@@ -318,6 +354,8 @@
 | 第 2 階段實作 | [FILE_INFO_BY_HANDLE_CLASS](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ne-minwinbase-file_info_by_handle_class) |
 | 第 2 階段實作 | [FILE_ATTRIBUTE_TAG_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_attribute_tag_info) |
 | 第 2 階段實作 | [IsReparseTagNameSurrogate](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-isreparsetagnamesurrogate) |
+| 第 2 階段驗證 | [GetFinalPathNameByHandleW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew) |
+| 第 2 階段驗證 | [FILE_STANDARD_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_standard_info) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
