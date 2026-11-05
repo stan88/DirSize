@@ -603,6 +603,99 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   其中「全新建立有、更新後沒有」的檔案，當場用 ID 重查時都已經不存在了，同一個 MFT 記錄號已換成更新的序號，也就是檔案已被刪除或取代。這是比較方法本身的時間差：開機後全新建立要 8 秒，期間磁碟一直在變，之後最後一次追日誌又套用了 748 個變動。更新後的索引反映的是比較晚的狀態。
 - 「重查沒有回傳、日誌也沒有刪除記錄」的 ID，兩顆各 1 個。日誌原因含 `FILE_CREATE` 和 `CLOSE`，判斷是讀完日誌到重查之間，檔案就被刪除了，它的刪除記錄會在下一次追日誌時讀到。
 
+### 2026-11-05 第 4 階段查證與設計草案
+
+設計草案見 [DESIGN-phase4.md](DESIGN-phase4.md)。以下是查文件得到、會影響設計的事實：
+
+- **服務**：
+  - 主執行緒要儘快呼叫 `StartServiceCtrlDispatcherW`，文件寫的是 30 秒內；控制處理函式也要在 30 秒內返回。
+  - SHUTDOWN 預設約 20 秒可以收尾；PRESHUTDOWN 會先收到，可以設定逾時時間。
+  - 延遲自動啟動只保證在其他自動啟動的服務之後「再加一小段延遲」，沒有確切時間。
+  - LocalSystem 有 SeBackupPrivilege，但預設是停用；LocalService 的權限清單裡沒有它。
+  - `SERVICE_REQUIRED_PRIVILEGES_INFO` 可以讓 SCM 在啟動時移除不需要的權限。
+  - `SERVICE_SID_TYPE_RESTRICTED` 會讓 token 變成寫入受限。
+- **Named pipe**：
+  - 預設的安全描述元會讓 Everyone 和匿名帳戶都能讀，所以要自己指定權限。
+  - `FILE_FLAG_FIRST_PIPE_INSTANCE`：如果名稱已經被建立過，會回傳 `ERROR_ACCESS_DENIED`，可以用來防止名稱被搶先佔用。
+  - `PIPE_REJECT_REMOTE_CLIENTS` 會自動拒絕遠端連線。
+  - `ImpersonateNamedPipeClient` 失敗時，之後的動作會用服務自己的身分執行。服務是 SYSTEM，所以必須「失敗就拒絕」。
+  - 冒充等級由前端決定，用 `CreateFileW` 的 `SECURITY_SQOS_PRESENT` 旗標指定。named pipe 預設是 SecurityImpersonation。
+  - 第一次抓 `CreateNamedPipeW` 的頁面時，舊網址（`winbase`）回傳 404，正確的是 `namedpipeapi`。
+- **資源**：
+  - Job Object 的 CPU 硬上限，單位是每 10,000 個週期可用幾個，例如 20% 就設 2,000。**文件沒寫**的有：百分比以整台電腦還是單一核心計算；行程能不能把自己放進 job。
+  - `PROCESS_MODE_BACKGROUND_BEGIN` 只能用在目前的行程，文件說和使用者互動的行程不應該用。
+  - `THREAD_MODE_BACKGROUND_BEGIN` 只能用在目前的執行緒，並提醒要避免和其他執行緒共用資源，否則會發生優先順序反轉。
+  - EcoQoS 用 `SetProcessInformation(ProcessPowerThrottling)` 開啟。
+- **閒置偵測**：
+  - `GetLastInputInfo` 只回報呼叫者自己 session 的輸入，服務在 session 0 用不到。
+  - 服務可以用 `RegisterPowerSettingNotification` 搭配 `DEVICE_NOTIFY_SERVICE_HANDLE`，接收 `GUID_GLOBAL_USER_PRESENCE` 和 `GUID_ACDC_POWER_SOURCE`。文件寫明，session 0 的服務要用 GLOBAL 版本。
+- **待實測**（文件沒說明）：
+  - 識別等級的 token 能不能用在 `AccessCheck`。文件只說要傳 impersonation token，沒提到冒充等級；另外，`OpenThreadToken` 的 `OpenAsSelf` 可以在識別等級下取得 token。
+  - 建索引和讀日誌是否需要 SeBackupPrivilege。
+
+#### 實測程式 `tools/service_probe.cpp`（CMake target `service-probe`，不出貨）
+
+**access**（一般權限，同一個使用者當服務端；2026-11-05）：
+
+| 前端的冒充等級 | 用呼叫者身分開資料夾 | `AccessCheck`（讀資料夾的安全描述元後判斷） |
+|---|---|---|
+| SecurityImpersonation（預設） | 有權限：打開；DACL 拒絕：錯誤 5 | 允許、拒絕都正確 |
+| SecurityIdentification | 一律失敗，錯誤 1346（`ERROR_BAD_IMPERSONATION_LEVEL`） | **允許、拒絕都正確** |
+
+- 文件沒說明的一點，實測確認了：識別等級的 token（用 `OpenThreadToken` 的 `OpenAsSelf = TRUE` 取得）可以用在 `AccessCheck`。
+- 識別等級下開檔會直接失敗，不會退回用服務自己的身分開。
+- 一般權限讀不到 `ProgramData\DirSize\cache` 的安全描述元（錯誤 5），所以這一格沒有 `AccessCheck` 的結果。真正的服務以 SYSTEM 執行，到時候再測。
+
+**backup**（提權，C:）：停用和啟用 SeBackupPrivilege 時，建索引（約 3.5 s）和讀日誌都成功，資料夾數相同，存取被拒都是 0；檔案數差 1，是兩次之間有檔案變動。**結論：服務不需要 SeBackupPrivilege。**
+
+**cpu**（提權，C:，20 個邏輯處理器）：
+
+- **Job 的 CPU 上限是以整台電腦計算**：
+  - 第一次以整台電腦的百分比設定，50%、25%、10% 都限制不到單一執行緒：10% 下還能用到單一核心的 98%，建索引時間不變。
+  - 建索引只用一個執行緒，所以本來就最多一個核心，在這台電腦上是 5%。
+  - 把上限設成 0 來關閉（`ControlFlags = 0`）會回傳錯誤 87，所以第一次標成「不限」的那次建索引，其實還套著前一次的 10% 上限。這不影響結論，因為 10% 本來就限制不到單一執行緒。
+  - 行程可以把自己放進 job（`AssignProcessToJobObject(GetCurrentProcess())` 成功），這點文件沒寫。
+- **第二次以「單一核心」為單位設定**，`CpuRate = 比例 × 10000 ÷ 處理器數`。小工作在另一個執行緒上每 20 ms 量一次：
+
+| 上限 | 單一執行緒實際分到 | 建索引經過時間 | 建索引 CPU 時間 | 小工作延遲 p99 | 最大 |
+|---|---|---|---|---|---|
+| 不放進 job | 94.8% | 4.03 s | 3.77 s | 0.14 ms | 0.14 ms |
+| 1 個核心（`CpuRate` 500） | 94.8% | 6.45 s | 6.09 s | 0.32 ms | 0.40 ms |
+| 1/2 個核心（250） | 56.8% | 12.35 s | 6.41 s | 258 ms | 311 ms |
+| 1/4 個核心（125） | 27.6% | 22.60 s | 5.56 s | 421 ms | 510 ms |
+
+- 上限真正卡住時（1/2、1/4 核心），**同一個行程的其他執行緒也會停住**：小工作最多延遲 0.3～0.5 秒。所以如果要設低於 1 個核心的上限，回答查詢的執行緒會跟著被拖慢。
+- 1 個核心的上限下，建索引的 CPU 時間從 3.8 s 增加到 6.1 s，經過時間從 4.0 s 增加到 6.5 s。原因還沒查明。
+
+#### 決定與第 2 步：pipe 協定與存取檢查（2026-11-05）
+
+- **決定**（都採用 A，詳見 DESIGN-phase4.md 第 8 節）：
+  - 8.1 呼叫者看得到子資料夾的大小，打不開的標「沒有權限」；
+  - 8.2 所有本機固定式 NTFS 磁碟自動建索引；
+  - 8.3 重掃後，把大小不同的檔案加進追蹤清單；
+  - 8.4 整個服務 CPU 上限 1 個核心；
+  - 8.5 前端用識別等級連線，服務用 `AccessCheck` 判斷。
+- **新增**：
+  - `src/service/protocol`：訊息格式與編解碼，純位元組處理；
+  - `src/service/access`：
+    - 路徑驗證；
+    - 從 pipe 取得呼叫者的 token，任何一步失敗都拒絕，`RevertToSelf` 失敗就結束行程；
+    - 以服務身分開資料夾，再用 `AccessCheck` 判斷能不能列出；
+    - 用 `GetFinalPathNameByHandleW(VOLUME_NAME_GUID)` 取得 handle 所在的磁碟區。
+- **測試** `service-tests`（154 項，不需要提權）：
+  - 協定：往返；每一種截斷長度和多一個位元組都要被拒絕；每一項長度和範圍檢查都有對應的案例。
+  - 路徑：接受和拒絕的各種寫法，包括 UNC、`\\?\`、`\\.\`、`GLOBALROOT`、相對路徑、`..`、資料流名稱、控制字元。
+  - 存取：在同一個行程裡建 pipe，前端分別用識別、冒充、匿名三種等級連線，對「能列出」和「DACL 拒絕列出」兩個資料夾判斷。
+- **測試發現的兩件事**：
+  - **`C:\\` 被當成根目錄接受**：去掉結尾反斜線時沒有排除這種情況，是我的 bug，已修正。
+  - **還沒讀任何訊息，就能取得前端的 token**：文件只說會冒充「最後讀到的那則訊息」的安全內容，沒說沒讀過訊息時會怎樣。實測可以取得，等級也正確，而且就是實際連線進來的前端。測試已改成記錄這個行為。
+- **突變檢查**：一次拿掉一項檢查，看有沒有測試失敗。第一次有 3 項沒被抓到：
+  - **token 等級檢查**：匿名等級在 `OpenThreadToken` 就失敗了，所以這項檢查走不到。改成抽出 `UsableClientToken` 直接測試。
+  - **路徑長度上限**：原本的測試案例被別的檢查先擋下。補了一個剛好超過上限、資料長度也正確的案例。
+  - **`.`、`..` 的檢查**：「結尾不能是句點」的規則已經包含這兩種情況，是預期中的重複檢查，保留著讓意圖清楚。
+
+  其餘 24 項，拿掉任何一項都會有測試失敗。
+
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
 - 實測：`FSCTL_QUERY_FILE_LAYOUT` 在一般權限下無法使用（錯誤 1）；逐目錄掃描可以用，但讀不到部分資料夾。
@@ -679,6 +772,45 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 快取 | [FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers) |
 | 快取 | [CreateDirectoryW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw) |
 | 快取 | [PNG Specification (Third Edition) 5.5 CRC algorithm](https://www.w3.org/TR/png-3/#5CRC-algorithm) |
+| 第 3 階段修正 | [FILE_INFO_BY_HANDLE_CLASS（FileIdBothDirectoryRestartInfo）](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ne-minwinbase-file_info_by_handle_class) |
+| 第 4 階段設計 | [StartServiceCtrlDispatcherW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-startservicectrldispatcherw) |
+| 第 4 階段設計 | [RegisterServiceCtrlHandlerExW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-registerservicectrlhandlerexw) |
+| 第 4 階段設計 | [LPHANDLER_FUNCTION_EX](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nc-winsvc-lphandler_function_ex) |
+| 第 4 階段設計 | [SERVICE_STATUS](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_status) |
+| 第 4 階段設計 | [Service Control Handler Function](https://learn.microsoft.com/en-us/windows/win32/services/service-control-handler-function) |
+| 第 4 階段設計 | [SERVICE_DELAYED_AUTO_START_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_delayed_auto_start_info) |
+| 第 4 階段設計 | [SERVICE_FAILURE_ACTIONSW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actionsw) |
+| 第 4 階段設計 | [SC_ACTION](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-sc_action) |
+| 第 4 階段設計 | [SERVICE_FAILURE_ACTIONS_FLAG](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actions_flag) |
+| 第 4 階段設計 | [LocalSystem Account](https://learn.microsoft.com/en-us/windows/win32/services/localsystem-account) |
+| 第 4 階段設計 | [LocalService Account](https://learn.microsoft.com/en-us/windows/win32/services/localservice-account) |
+| 第 4 階段設計 | [SERVICE_REQUIRED_PRIVILEGES_INFOW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_required_privileges_infow) |
+| 第 4 階段設計 | [SERVICE_SID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_sid_info) |
+| 第 4 階段設計 | [CreateServiceW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-createservicew) |
+| 第 4 階段設計 | [ChangeServiceConfig2W](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-changeserviceconfig2w) |
+| 第 4 階段設計 | [CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew) |
+| 第 4 階段設計 | [Pipe Names](https://learn.microsoft.com/en-us/windows/win32/ipc/pipe-names) |
+| 第 4 階段設計 | [Named Pipe Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights) |
+| 第 4 階段設計 | [ImpersonateNamedPipeClient](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-impersonatenamedpipeclient) |
+| 第 4 階段設計 | [GetNamedPipeClientProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeclientprocessid) |
+| 第 4 階段設計 | [GetNamedPipeServerProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid) |
+| 第 4 階段設計 | [AccessCheck](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-accesscheck) |
+| 第 4 階段設計 | [MapGenericMask](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-mapgenericmask) |
+| 第 4 階段設計 | [Impersonation Levels](https://learn.microsoft.com/en-us/windows/win32/secauthz/impersonation-levels) |
+| 第 4 階段設計 | [Impersonation Tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/impersonation-tokens) |
+| 第 4 階段設計 | [Client Impersonation](https://learn.microsoft.com/en-us/windows/win32/secauthz/client-impersonation) |
+| 第 4 階段設計 | [Verifying Client Access with ACLs in C++](https://learn.microsoft.com/en-us/windows/win32/secauthz/verifying-client-access-with-acls-in-c--) |
+| 第 4 階段設計 | [OpenThreadToken](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openthreadtoken) |
+| 第 4 階段設計 | [CreateFileW（SECURITY_SQOS_PRESENT）](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew) |
+| 第 4 階段設計 | [JOBOBJECT_CPU_RATE_CONTROL_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_cpu_rate_control_information) |
+| 第 4 階段設計 | [AssignProcessToJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject) |
+| 第 4 階段設計 | [SetPriorityClass](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass) |
+| 第 4 階段設計 | [SetThreadPriority](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setthreadpriority) |
+| 第 4 階段設計 | [SetProcessInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation) |
+| 第 4 階段設計 | [GetLastInputInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getlastinputinfo) |
+| 第 4 階段設計 | [GetSystemTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes) |
+| 第 4 階段設計 | [Power Setting GUIDs](https://learn.microsoft.com/en-us/windows/win32/power/power-setting-guids) |
+| 第 4 階段設計 | [RegisterPowerSettingNotification](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerpowersettingnotification) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |

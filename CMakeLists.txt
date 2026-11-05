@@ -46,6 +46,14 @@ add_library(dirsize_core STATIC
 target_include_directories(dirsize_core PUBLIC src)
 target_link_libraries(dirsize_core PUBLIC shell32 ole32 advapi32)
 
+# Phase 4 service components.
+add_library(dirsize_service STATIC
+    src/service/protocol.cpp
+    src/service/access.cpp
+)
+target_include_directories(dirsize_service PUBLIC src)
+target_link_libraries(dirsize_service PUBLIC dirsize_core)
+
 add_executable(dirsize-cli src/cli/main.cpp)
 target_link_libraries(dirsize-cli PRIVATE dirsize_core psapi)
 
@@ -57,6 +65,10 @@ target_link_libraries(layout-probe PRIVATE dirsize_core psapi)
 add_executable(usn-probe tools/usn_probe.cpp)
 target_link_libraries(usn-probe PRIVATE dirsize_core)
 
+# Phase 4 feasibility probe (measurement only, not shipped).
+add_executable(service-probe tools/service_probe.cpp)
+target_link_libraries(service-probe PRIVATE dirsize_core)
+
 # Unit tests (no elevation needed): ctest -C Release
 enable_testing()
 add_executable(core-tests tests/core_tests.cpp)
@@ -65,3 +77,6 @@ add_test(NAME core-tests COMMAND core-tests)
 add_executable(live-tests tests/live_index_tests.cpp)
 target_link_libraries(live-tests PRIVATE dirsize_core)
 add_test(NAME live-tests COMMAND live-tests)
+add_executable(service-tests tests/service_tests.cpp)
+target_link_libraries(service-tests PRIVATE dirsize_service)
+add_test(NAME service-tests COMMAND service-tests)
