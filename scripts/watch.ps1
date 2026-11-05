@@ -30,7 +30,7 @@ foreach ($drive in $Drives) {
     Write-Host "Watching ${drive}: for $Seconds s ..."
     $out = & $exe watch "${drive}:" $Seconds
     [IO.File]::WriteAllLines($file, [string[]]$out, [Text.UTF8Encoding]::new($false))
-    $out | Select-String -Pattern 'failed|NEEDS RESCAN|replay|catch-ups|Maintained|Whole volume|Differing|Result' |
+    $out | Select-String -Pattern 'failed|NEEDS RESCAN|replay|catch-ups|Resources|Memory now|Index tables|Maintained|Whole volume|Differing|never in journal  |closed since  |tracked open  |Result' |
         ForEach-Object { "  $_" }
     Write-Host "  -> $file"
 }

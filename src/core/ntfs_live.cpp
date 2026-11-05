@@ -139,6 +139,7 @@ CatchUpResult NtfsLiveVolume::CatchUp() {
                                                          ++r.records;
                                                          collector.Add(c);
                                                          open_.Observe(c);
+                                                         seen_.insert(c.id);
                                                      });
         if (status != UsnParseStatus::Ok) return Rescan(r, L"malformed journal record");
         if (collector.Size() > kMaxChangedIdsPerCatchUp) return Rescan(r, L"too many changes");

@@ -146,6 +146,51 @@ std::uint64_t WorkingSetBytes() {
     return 0;
 }
 
+// Process resource use at one moment (GetProcessTimes, GetProcessIoCounters,
+// GetProcessMemoryInfo). Differences between two snapshots give the cost of
+// the work in between.
+struct Usage {
+    std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now();
+    std::uint64_t kernel100ns = 0, user100ns = 0;
+    IO_COUNTERS io{};
+    PROCESS_MEMORY_COUNTERS memory{};
+};
+
+Usage TakeUsage() {
+    Usage u;
+    FILETIME created, exited, kernel, user;
+    if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+        u.kernel100ns = (static_cast<std::uint64_t>(kernel.dwHighDateTime) << 32) | kernel.dwLowDateTime;
+        u.user100ns = (static_cast<std::uint64_t>(user.dwHighDateTime) << 32) | user.dwLowDateTime;
+    }
+    GetProcessIoCounters(GetCurrentProcess(), &u.io);
+    u.memory.cb = sizeof(u.memory);
+    GetProcessMemoryInfo(GetCurrentProcess(), &u.memory, sizeof(u.memory));
+    return u;
+}
+
+// CPU time is summed over all threads, so the average can exceed 100% of one
+// core; "of one core" makes that explicit.
+void PrintResources(const wchar_t* what, const Usage& a, const Usage& b) {
+    const double wall = std::chrono::duration<double>(b.at - a.at).count();
+    const double kernel = (b.kernel100ns - a.kernel100ns) / 1e7;
+    const double user = (b.user100ns - a.user100ns) / 1e7;
+    const double percent = wall > 0 ? (kernel + user) / wall * 100 : 0;
+    WriteLine(Format(L"  Resources (%s): wall %.3f s, CPU %.3f s (kernel %.3f, user %.3f), %.2f%% of one core", what,
+                     wall, kernel + user, kernel, user, percent));
+    WriteLine(Format(L"    I/O: read ops %llu (%s), other ops %llu (%s), write ops %llu (%s)",
+                     b.io.ReadOperationCount - a.io.ReadOperationCount,
+                     FormatBytes(b.io.ReadTransferCount - a.io.ReadTransferCount).c_str(),
+                     b.io.OtherOperationCount - a.io.OtherOperationCount,
+                     FormatBytes(b.io.OtherTransferCount - a.io.OtherTransferCount).c_str(),
+                     b.io.WriteOperationCount - a.io.WriteOperationCount,
+                     FormatBytes(b.io.WriteTransferCount - a.io.WriteTransferCount).c_str()));
+    WriteLine(Format(L"    Memory now: working set %s, commit %s; peaks so far: working set %s, commit %s",
+                     FormatBytes(b.memory.WorkingSetSize).c_str(), FormatBytes(b.memory.PagefileUsage).c_str(),
+                     FormatBytes(b.memory.PeakWorkingSetSize).c_str(),
+                     FormatBytes(b.memory.PeakPagefileUsage).c_str()));
+}
+
 // ---- commands ---------------------------------------------------------------
 
 struct ScanOptions {
@@ -482,6 +527,7 @@ struct Comparer {
     std::uint64_t differingFolders = 0;
     std::uint64_t onlyInLayout = 0;
     std::uint64_t onlyInWalk = 0;
+    bool listFiles = true;  // name differing files from a new directory listing
     static constexpr int kMaxDepth = 14;
     static constexpr std::int64_t kBytesShown = 1 << 20;
 
@@ -541,7 +587,7 @@ struct Comparer {
                              Diff(ld.allocatedBytes, wd.allocatedBytes)));
             // Names the differing files; the folder is listed again now, so
             // files that changed since the walk may also show up.
-            if (l != layout.root) CompareFilesIn(PathOf(layout, l, rootPath), layout, l, indent + L"  ", 5, false);
+            if (listFiles && l != layout.root) CompareFilesIn(PathOf(layout, l, rootPath), layout, l, indent + L"  ", 5, false);
         }
         if (level >= kMaxDepth) return;
         std::sort(differing.begin(), differing.end(), [](const Pair& a, const Pair& b) { return a.weight > b.weight; });
@@ -653,6 +699,68 @@ void PrintCatchUp(const wchar_t* what, const dirsize::CatchUpResult& r) {
     if (r.needsRescan) WriteLine(Format(L"    NEEDS RESCAN: %s (Win32 error %lu)", r.reason, r.error));
 }
 
+// Compares every file by ID between the updated and the fresh index and says
+// whether the journal ever mentioned it. A differing file the journal never
+// mentioned changed without a record we read (for example a file opened
+// before the build and still being written).
+void PrintDifferingFiles(const dirsize::NtfsLiveVolume& volume, const VolumeIndex& updated, const VolumeIndex& fresh,
+                         const std::wstring& rootPath) {
+    struct Sizes {
+        std::uint64_t logical = 0, allocated = 0;
+    };
+    std::unordered_map<std::uint64_t, Sizes> inFresh;
+    inFresh.reserve(fresh.files.size());
+    for (const auto& f : fresh.files) inFresh[f.id] = {f.logicalBytes, f.allocatedBytes};
+    struct Item {
+        std::uint64_t id;
+        Sizes updated, fresh;
+        bool inUpdated, inFresh;
+        std::uint64_t weight;  // |logical difference|
+    };
+    std::vector<Item> items;
+    for (const auto& f : updated.files) {
+        auto it = inFresh.find(f.id);
+        if (it == inFresh.end()) {
+            items.push_back({f.id, {f.logicalBytes, f.allocatedBytes}, {}, true, false, f.logicalBytes});
+            continue;
+        }
+        if (it->second.logical != f.logicalBytes || it->second.allocated != f.allocatedBytes) {
+            items.push_back({f.id, {f.logicalBytes, f.allocatedBytes}, it->second, true, true,
+                             static_cast<std::uint64_t>(std::llabs(Diff(f.logicalBytes, it->second.logical)))});
+        }
+        inFresh.erase(it);
+    }
+    for (const auto& [id, sizes] : inFresh) items.push_back({id, {}, sizes, false, true, sizes.logical});
+
+    auto group = [&](const Item& i) { return !volume.SeenInJournal(i.id) ? 0 : volume.TrackedOpen(i.id) ? 2 : 1; };
+    const wchar_t* names[3] = {L"never in journal", L"closed since", L"tracked open"};
+    std::uint64_t count[3] = {}, bytes[3] = {};
+    for (const Item& i : items) {
+        ++count[group(i)];
+        bytes[group(i)] += i.weight;
+    }
+    WriteLine();
+    WriteLine(L"== Files that differ (updated index vs fresh build, by file ID)");
+    WriteLine(Format(L"  Differing files %zu", items.size()));
+    for (int g = 0; g < 3; ++g) {
+        WriteLine(Format(L"    %-17s %llu files, sum of |byte differences| %llu", names[g], count[g], bytes[g]));
+    }
+    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.weight > b.weight; });
+    HANDLE hint = dirsize::OpenDirectoryForListing(rootPath.c_str());
+    constexpr size_t kShown = 60;
+    for (size_t n = 0; n < items.size() && n < kShown; ++n) {
+        const Item& i = items[n];
+        const std::wstring u = i.inUpdated ? Format(L"%llu B (on disk %llu B)", i.updated.logical, i.updated.allocated)
+                                           : std::wstring(L"(missing)");
+        const std::wstring f = i.inFresh ? Format(L"%llu B (on disk %llu B)", i.fresh.logical, i.fresh.allocated)
+                                         : std::wstring(L"(missing)");
+        WriteLine(Format(L"  id 0x%016llx: updated %s, fresh %s; %s", i.id, u.c_str(), f.c_str(), names[group(i)]));
+        WriteLine(Format(L"    %s", hint == INVALID_HANDLE_VALUE ? L"(no path)" : PathById(hint, i.id).c_str()));
+    }
+    if (items.size() > kShown) WriteLine(Format(L"  ... %zu more", items.size() - kShown));
+    if (hint != INVALID_HANDLE_VALUE) CloseHandle(hint);
+}
+
 int RunWatch(const wchar_t* driveArg, unsigned seconds) {
     if (!iswalpha(driveArg[0]) || (driveArg[1] != L'\0' && driveArg[1] != L':')) {
         PrintUsage();
@@ -667,6 +775,7 @@ int RunWatch(const wchar_t* driveArg, unsigned seconds) {
 
     WriteLine();
     WriteLine(L"== Build");
+    const Usage u0 = TakeUsage();
     dirsize::NtfsIndexResult build;
     std::unique_ptr<dirsize::NtfsLiveVolume> volume = dirsize::NtfsLiveVolume::Build(drive, build);
     if (!volume) {
@@ -678,6 +787,9 @@ int RunWatch(const wchar_t* driveArg, unsigned seconds) {
     dirsize::CatchUpResult r = volume->CatchUp();
     PrintCatchUp(L"replay of changes during the scan", r);
     if (r.needsRescan) return 1;
+    const Usage u1 = TakeUsage();
+    PrintResources(L"build and replay", u0, u1);
+    WriteLine(Format(L"  Index tables %s", FormatBytes(volume->Live().Index().MemoryBytes()).c_str()));
 
     WriteLine();
     WriteLine(L"== Watch (catch-up every 5 s; lines only when something changed)");
@@ -696,6 +808,8 @@ int RunWatch(const wchar_t* driveArg, unsigned seconds) {
     }
     WriteLine(Format(L"  %llu catch-ups, %llu changed IDs in total, at most %llu open files tracked, slowest %.3f s",
                      rounds, totalIds, maxOpen, worstSeconds));
+    const Usage u2 = TakeUsage();
+    PrintResources(L"watching, mostly asleep between catch-ups", u1, u2);
 
     WriteLine();
     WriteLine(L"== Compare with a fresh full build");
@@ -704,6 +818,7 @@ int RunWatch(const wchar_t* driveArg, unsigned seconds) {
         WriteLine(Format(L"  failed: %s (Win32 error %lu)", fresh.failedStep, fresh.error));
         return 1;
     }
+    PrintResources(L"fresh full build, a second index in memory", u2, TakeUsage());
     r = volume->CatchUp();  // include what changed during the fresh build
     PrintCatchUp(L"last catch-up", r);
     if (r.needsRescan) return 1;
@@ -721,9 +836,11 @@ int RunWatch(const wchar_t* driveArg, unsigned seconds) {
                      Diff(lt.folders, ft.folders), Diff(lt.logicalBytes, ft.logicalBytes),
                      Diff(lt.allocatedBytes, ft.allocatedBytes)));
     Comparer comparer{live, fresh.index, rootPath};
+    comparer.listFiles = false;  // files are compared by ID with the fresh build below
     comparer.Compare(live.root, fresh.index.root, 0);
     WriteLine(Format(L"  Differing folders %llu, only in updated %llu, only in fresh %llu", comparer.differingFolders,
                      comparer.onlyInLayout, comparer.onlyInWalk));
+    PrintDifferingFiles(*volume, live, fresh.index, rootPath);
     WriteLine();
     WriteLine(Format(L"Result: %s", comparer.Differs(lt, ft) ? L"DIFFERENT (see above)" : L"IDENTICAL totals"));
     return 0;

@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <unordered_set>
 
 #include "core/live_index.h"
 #include "core/ntfs_index.h"
@@ -61,6 +62,10 @@ public:
     const LiveIndex& Live() const { return live_; }
     std::uint64_t JournalId() const { return journalId_; }
     std::int64_t AppliedUsn() const { return appliedUsn_; }
+    // Diagnostics: whether a file ID appeared in any journal record read so
+    // far, and whether it is currently tracked as open (no CLOSE seen yet).
+    bool SeenInJournal(std::uint64_t id) const { return seen_.count(id) != 0; }
+    bool TrackedOpen(std::uint64_t id) const { return open_.Ids().count(id) != 0; }
 
 private:
     NtfsLiveVolume(wchar_t drive, VolumeIndex index);
@@ -72,6 +77,7 @@ private:
     std::uint64_t journalId_ = 0;
     std::int64_t appliedUsn_ = 0;
     OpenFileTracker open_;
+    std::unordered_set<std::uint64_t> seen_;
 };
 
 }  // namespace dirsize

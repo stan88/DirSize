@@ -477,6 +477,54 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   
   下一步會補上這兩項。
 
+#### watch 補強：資源量測與逐檔比對
+
+- **逐檔比對**：改成「更新後的索引 vs 全新建立」，以檔案 ID 比對，不再重新列資料夾。每個不同的檔案依日誌狀態分三組：
+  - 從沒出現在日誌（`never in journal`）；
+  - 出現過、之後已關閉（`closed since`）；
+  - 仍在追蹤中（`tracked open`）。
+
+  每組列出檔案數和位元組差異的總和。差異最大的 60 個檔案，另外列出路徑。
+- **資源量測**：分三段量本程式的用量：
+  - 建索引加重播；
+  - 監看期間（大多在睡眠）；
+  - 全新建立（此時記憶體裡同時有兩份索引）。
+
+  每段記錄經過時間和 CPU 時間，CPU 分核心模式與使用者模式，並換算成單一核心的百分比；另外記錄 I/O 次數與位元組數、目前與峰值的工作集和 commit。
+  - CPU 時間來自 [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)，單位是 100 奈秒，是所有執行緒的總和，所以可能超過經過時間。
+  - I/O 來自 [GetProcessIoCounters](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getprocessiocounters)／[IO_COUNTERS](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-io_counters)。文件只說「read／write／other 的次數與位元組數」，**沒說 `DeviceIoControl` 算在哪一類，也沒說算的是快取還是實際磁碟讀寫**。所以這組數字只能當參考，不能當成磁碟負載。
+  - 記憶體來自 [PROCESS_MEMORY_COUNTERS](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters)：`PagefileUsage` 是 commit charge，`PeakPagefileUsage` 是它的峰值。
+
+#### 第三次 watch 實測（資源量測＋逐檔比對，2026-11-05，提權，C:、D: 各 300 秒）
+
+**資源用量**（本程式單一執行緒；百分比是相對於單一核心）：
+
+| 階段 | C: | D: |
+|---|---|---|
+| 建索引＋重播：經過時間 | 5.4 s | 6.0 s |
+| 建索引＋重播：CPU | 3.7 s（69%，幾乎都是核心模式） | 4.7 s（78%） |
+| 索引本身 | 63.8 MB | 33.6 MB |
+| 建完後的工作集 | 55 MB（建索引時峰值 128 MB） | 39 MB（峰值 102 MB） |
+| 監看 300 秒：CPU | 0.141 s（0.05%） | 0.062 s（0.02%） |
+| 監看期間的記憶體變化 | 工作集 +0.4 MB | 工作集 +0.2 MB |
+| 全新建立（測試用，此時有兩份索引） | 3.9 s，CPU 93%，峰值工作集 179 MB | 5.0 s，CPU 94%，峰值 136 MB |
+
+- 平常監看的成本幾乎可以忽略。**成本集中在整顆建索引**：約 4～6 秒裡大致佔滿一個核心，而且大多是核心模式，也就是時間花在檔案系統處理 `FSCTL_QUERY_FILE_LAYOUT` 上。
+- 建索引時的記憶體峰值大約是索引本身的 2 倍，建完後會降下來。
+- I/O 計數：建索引時 other ops 約 1,500 次、519 MB（C:），read／write 都是 0。依文件無法確定這代表什麼（見上一節），所以不拿來判斷磁碟負載。
+
+**逐檔比對**：D: 完全相同。C: 有 42 個檔案不同，合計 −1,095,081 B：
+
+| 組別 | 檔案數 | 位元組差異總和 | 判斷 |
+|---|---|---|---|
+| 從沒出現在日誌 | 33 | 1,107,307 | 建索引前就開著、一直在寫的檔案 |
+| 出現過、已關閉 | 8 | 1,024,762 | 比較時間差（見下） |
+| 仍在追蹤 | 1 | 894 | 比較時間差 |
+
+- **從沒出現在日誌的 33 個**：全部是記錄檔、`-wal`、`.etl`、`.edb`、`.LOG2`、`.trc`、leveldb 檔案，而且除了一個被截短的檔案以外，都是更新後的索引比較小。這證實了上一次的推測：剩下的差異來自建索引之前就開著的檔案，日誌裡沒有它們的記錄。
+- **出現過、已關閉的 8 個**：多半是同一個 MFT 記錄號、序號不同的成對項目，也就是檔案被刪除後重建（例如「寫入暫存檔再改名覆蓋」）。全新建立的是舊序號，更新後的索引是新序號，而且舊序號已經無法開啟（error 87）。這是比較方法本身的時間差：全新建立先完成，最後一次追日誌才在之後套用了這段時間的變動。這不是增量更新的錯誤。整顆的「檔案 −1」也是同樣的原因。
+- **結論**：增量更新在日誌看得到的範圍內是正確的。看不到的只有建索引前就開著的檔案，要靠定期重掃，或是依第 4 階段的構想，把重掃前後大小不同的檔案加進追蹤清單。
+
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
 - 實測：`FSCTL_QUERY_FILE_LAYOUT` 在一般權限下無法使用（錯誤 1）；逐目錄掃描可以用，但讀不到部分資料夾。
@@ -532,6 +580,10 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 第 3 階段設計 | [ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew) |
 | 第 3 階段設計 | [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw) |
 | 第 3 階段設計 | [System Error Codes 1000-1299](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--1000-1299-) |
+| cli watch | [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) |
+| cli watch | [GetProcessIoCounters](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getprocessiocounters) |
+| cli watch | [IO_COUNTERS](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-io_counters) |
+| cli watch | [PROCESS_MEMORY_COUNTERS](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
