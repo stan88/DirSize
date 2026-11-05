@@ -58,6 +58,7 @@ class OpenFileTracker {
 public:
     void Observe(const UsnChange& c);
     void Forget(std::uint64_t id) { open_.erase(id); }
+    void Track(std::uint64_t id) { open_[id] = true; }  // e.g. restored from a cache
     const std::unordered_map<std::uint64_t, bool>& Ids() const { return open_; }
     size_t Size() const { return open_.size(); }
 

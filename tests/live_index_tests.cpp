@@ -12,14 +12,19 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <map>
 #include <random>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "core/cache_store.h"
+#include "core/crc32.h"
 #include "core/index.h"
+#include "core/index_cache.h"
 #include "core/layout_index_builder.h"
 #include "core/live_index.h"
 #include "core/usn_parser.h"
@@ -29,6 +34,7 @@ namespace {
 int g_failures = 0;
 int g_checks = 0;
 unsigned g_seed = 0;
+int g_roundTrips = 0;
 
 #define CHECK(cond)                                                                          \
     do {                                                                                     \
@@ -434,6 +440,24 @@ void TestRandomEquivalence() {
                 std::printf("  seed %u batch %d differs\n", seed, batch);
                 ok = false;
             }
+            if (ok && batch == 150) {
+                CacheMeta meta;
+                meta.journalId = seed;
+                meta.appliedUsn = 1000 + batch;
+                meta.openFileIds = {7, 9};
+                const std::vector<std::byte> bytes = SerializeIndex(got, meta);
+                VolumeIndex loaded;
+                CacheMeta back;
+                const CacheLoadResult r2 = DeserializeIndex(bytes.data(), bytes.size(), loaded, back);
+                if (r2.status != CacheLoadStatus::Ok || !SameIndex(got, loaded) || back.journalId != meta.journalId ||
+                    back.appliedUsn != meta.appliedUsn || back.openFileIds != meta.openFileIds ||
+                    SerializeIndex(loaded, back) != bytes) {
+                    std::printf("  seed %u: cache round trip differs (%ls)\n", seed, r2.reason);
+                    ok = false;
+                }
+                live = LiveIndex(std::move(loaded));  // keep updating the loaded index
+                ++g_roundTrips;
+            }
         }
         CHECK(ok);
     }
@@ -666,17 +690,280 @@ void TestChangeHelpers() {
     CHECK(open.Size() == 0);
 }
 
+
+// ---- cache ----------------------------------------------------------------------
+
+void TestCrc32() {
+    // Check values computed independently with Python's zlib.crc32 (zlib
+    // implements the same CRC as PNG and gzip, RFC 1952).
+    auto crc = [](const char* text) { return ComputeCrc32(text, std::strlen(text)); };
+    CHECK(crc("") == 0x00000000u);
+    CHECK(crc("a") == 0xE8B7BE43u);
+    CHECK(crc("123456789") == 0xCBF43926u);
+    CHECK(crc("The quick brown fox jumps over the lazy dog") == 0x414FA339u);
+    unsigned char all[256];
+    for (int i = 0; i < 256; ++i) all[i] = static_cast<unsigned char>(i);
+    CHECK(ComputeCrc32(all, sizeof(all)) == 0x29058C73u);
+    Crc32 parts;
+    parts.Update(all, 100);
+    parts.Update(all + 100, 156);
+    CHECK(parts.Value() == 0x29058C73u);
+}
+
+// An index with nested folders, hard links and several root children.
+VolumeIndex CacheSample() {
+    Volume v = BaseVolume();
+    LiveIndex live(v.Build());
+    Mutator m(v, 7);
+    for (int batch = 0; batch < 120; ++batch) {
+        const VolumeIndex before = live.Compacted();
+        std::vector<ChangedId> changed;
+        m.BeginBatch();
+        for (int k = 0; k < 3; ++k) m.Step(before, changed);
+        if (live.Apply(changed, v.Query(changed), v.Rules()).status != UpdateStatus::Applied) break;
+    }
+    return v.Build();
+}
+
+CacheLoadStatus Load(const std::vector<std::byte>& bytes) {
+    VolumeIndex index;
+    CacheMeta meta;
+    const CacheLoadResult r = DeserializeIndex(bytes.data(), bytes.size(), index, meta);
+    if (r.status != CacheLoadStatus::Ok) CHECK(index.dirs.empty() && index.files.empty() && meta.openFileIds.empty());
+    return r.status;
+}
+
+template <typename T>
+void PutAt(std::vector<std::byte>& b, size_t at, T value) {
+    std::memcpy(b.data() + at, &value, sizeof(T));
+}
+
+template <typename T>
+T GetAt(const std::vector<std::byte>& b, size_t at) {
+    T value;
+    std::memcpy(&value, b.data() + at, sizeof(T));
+    return value;
+}
+
+void TestCacheCorruption() {
+    const VolumeIndex index = CacheSample();
+    CacheMeta meta;
+    meta.journalId = 42;
+    meta.appliedUsn = 4096;
+    meta.openFileIds = {3};
+    const std::vector<std::byte> good = SerializeIndex(index, meta);
+    CacheSections s;
+    CHECK(LocateCacheSections(good, s));
+    CHECK(s.dirCount >= 4 && s.fileCount >= 4 && s.linkCount >= 1);
+    CHECK(Load(good) == CacheLoadStatus::Ok);
+    std::printf("cache sample: %llu folders, %llu files, %llu extra links, %zu bytes\n", s.dirCount, s.fileCount,
+                s.linkCount, good.size());
+
+    // Every truncation and every single-byte change is rejected.
+    bool allRejected = true;
+    for (size_t n = 0; n < good.size(); ++n) {
+        std::vector<std::byte> b(good.begin(), good.begin() + static_cast<std::ptrdiff_t>(n));
+        if (Load(b) == CacheLoadStatus::Ok) allRejected = false;
+    }
+    CHECK(allRejected);
+    allRejected = true;
+    for (size_t n = 0; n < good.size(); ++n) {
+        std::vector<std::byte> b = good;
+        b[n] ^= std::byte{0x01};
+        if (Load(b) == CacheLoadStatus::Ok) allRejected = false;
+    }
+    CHECK(allRejected);
+    {
+        std::vector<std::byte> b = good;
+        b.push_back(std::byte{0});
+        CHECK(Load(b) != CacheLoadStatus::Ok);
+    }
+
+    // Changes with valid checksums: the structural checks alone must catch them.
+    auto mutated = [&](auto change) {
+        std::vector<std::byte> b = good;
+        change(b);
+        RecomputeCacheChecksums(b);
+        return Load(b);
+    };
+    const size_t D = CacheSections::kDirBytes, F = CacheSections::kFileBytes;
+    auto dirAt = [&](std::uint64_t k) { return s.dirs + k * D; };
+    auto fileAt = [&](std::uint64_t k) { return s.files + k * F; };
+    const auto root = GetAt<std::uint32_t>(good, CacheSections::kRootAt);
+    // A non-root folder whose parent is not the root (for a cycle).
+    std::uint64_t child = 0, parent = 0;
+    for (std::uint64_t k = 0; k < s.dirCount; ++k) {
+        const auto p = GetAt<std::uint32_t>(good, dirAt(k) + CacheSections::kDirParentAt);
+        if (k != root && p != root && p != kNoDir) {
+            child = k;
+            parent = p;
+            break;
+        }
+    }
+    CHECK(child != 0 || parent != 0);
+    const std::uint64_t other = root == 0 ? 1 : 0;  // some non-root folder
+
+    CHECK(mutated([&](auto& b) { PutAt<std::uint32_t>(b, CacheSections::kRulesVersionAt, kCountingRulesVersion + 1); }) ==
+          CacheLoadStatus::VersionMismatch);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint32_t>(b, CacheSections::kRootAt, static_cast<std::uint32_t>(s.dirCount)); }) ==
+          CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) {  // root with a parent
+              PutAt<std::uint32_t>(b, dirAt(root) + CacheSections::kDirParentAt, static_cast<std::uint32_t>(other));
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) {  // folder that is its own parent
+              PutAt<std::uint32_t>(b, dirAt(other) + CacheSections::kDirParentAt, static_cast<std::uint32_t>(other));
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) {  // parent out of range
+              PutAt<std::uint32_t>(b, dirAt(other) + CacheSections::kDirParentAt, static_cast<std::uint32_t>(s.dirCount));
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) {  // non-root folder without a parent
+              PutAt<std::uint32_t>(b, dirAt(other) + CacheSections::kDirParentAt, kNoDir);
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) {  // cycle: parent -> child -> parent
+              PutAt<std::uint32_t>(b, dirAt(parent) + CacheSections::kDirParentAt, static_cast<std::uint32_t>(child));
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) {  // folder IDs out of order
+              const auto a = GetAt<std::uint64_t>(b, dirAt(0));
+              PutAt<std::uint64_t>(b, dirAt(0), GetAt<std::uint64_t>(b, dirAt(1)));
+              PutAt<std::uint64_t>(b, dirAt(1), a);
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint64_t>(b, dirAt(0), 0); }) == CacheLoadStatus::Invalid);  // ID 0
+    CHECK(mutated([&](auto& b) {  // name outside the pool
+              PutAt<std::uint32_t>(b, dirAt(other) + CacheSections::kDirNameOffsetAt, static_cast<std::uint32_t>(s.nameUnits));
+              PutAt<std::uint16_t>(b, dirAt(other) + CacheSections::kDirNameLengthAt, 1);
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint16_t>(b, dirAt(other) + CacheSections::kDirReservedAt, 1); }) ==
+          CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint16_t>(b, fileAt(0) + CacheSections::kFileReservedAt, 1); }) ==
+          CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint64_t>(b, fileAt(1), GetAt<std::uint64_t>(b, fileAt(0))); }) ==
+          CacheLoadStatus::Invalid);  // duplicate file ID
+    {  // a file with a folder's ID, keeping both lists strictly increasing
+        bool placed = false;
+        std::vector<std::byte> b = good;
+        for (std::uint64_t k = 0; k < s.fileCount && !placed; ++k) {
+            const std::uint64_t low = k == 0 ? 0 : GetAt<std::uint64_t>(b, fileAt(k - 1));
+            const std::uint64_t high = k + 1 == s.fileCount ? UINT64_MAX : GetAt<std::uint64_t>(b, fileAt(k + 1));
+            for (std::uint64_t d = 0; d < s.dirCount; ++d) {
+                const auto id = GetAt<std::uint64_t>(b, dirAt(d));
+                if (id > low && id < high) {
+                    PutAt<std::uint64_t>(b, fileAt(k), id);
+                    placed = true;
+                    break;
+                }
+            }
+        }
+        CHECK(placed);
+        RecomputeCacheChecksums(b);
+        CHECK(Load(b) == CacheLoadStatus::Invalid);
+    }
+    CHECK(mutated([&](auto& b) {
+              PutAt<std::uint32_t>(b, fileAt(0) + CacheSections::kFileDirAt, static_cast<std::uint32_t>(s.dirCount));
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint16_t>(b, fileAt(0) + CacheSections::kFileLinksAt, 0); }) ==
+          CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) {  // one more counted link than extra links
+              const auto n = GetAt<std::uint16_t>(b, fileAt(0) + CacheSections::kFileLinksAt);
+              PutAt<std::uint16_t>(b, fileAt(0) + CacheSections::kFileLinksAt, static_cast<std::uint16_t>(n + 1));
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) {  // extra link to a file out of range
+              PutAt<std::uint32_t>(b, s.links, static_cast<std::uint32_t>(s.fileCount));
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) {  // extra link to a folder out of range
+              PutAt<std::uint32_t>(b, s.links + 4, static_cast<std::uint32_t>(s.dirCount));
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) {  // size totals overflow
+              PutAt<std::uint64_t>(b, fileAt(0) + CacheSections::kFileLogicalAt, UINT64_MAX);
+              PutAt<std::uint64_t>(b, fileAt(1) + CacheSections::kFileLogicalAt, UINT64_MAX);
+          }) == CacheLoadStatus::Invalid);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint64_t>(b, CacheSections::kDirCountAt, s.dirCount + 1); }) ==
+          CacheLoadStatus::SizeMismatch);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint64_t>(b, CacheSections::kDirCountAt, UINT64_MAX / 2); }) == CacheLoadStatus::SizeMismatch);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint32_t>(b, 0, 0); }) == CacheLoadStatus::BadMagic);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint32_t>(b, CacheSections::kFormatVersionAt, kCacheFormatVersion + 1); }) ==
+          CacheLoadStatus::VersionMismatch);
+    CHECK(mutated([&](auto& b) { PutAt<std::uint32_t>(b, CacheSections::kHeaderReservedAt, 1); }) == CacheLoadStatus::Invalid);
+    // A count whose byte size wraps around to the right total (24 * 2^61 =
+    // 3 * 2^64): only the per-count bound stops it.
+    CHECK(mutated([&](auto& b) { PutAt<std::uint64_t>(b, CacheSections::kDirCountAt, s.dirCount + (1ull << 61)); }) ==
+          CacheLoadStatus::SizeMismatch);
+}
+
+// The cache folder checks, on folders an unelevated test can make. A folder
+// that passes needs an elevated process; the real run covers that.
+void TestCacheFolderChecks() {
+    wchar_t tempPath[MAX_PATH + 1] = {};
+    CHECK(GetTempPathW(MAX_PATH + 1, tempPath) != 0);
+    const std::wstring base = std::wstring(tempPath) + L"dirsize-cache-test-" + std::to_wstring(GetCurrentProcessId());
+    const std::wstring mine = base + L"\\mine";
+    const std::wstring junction = base + L"\\junction";
+    const std::wstring file = base + L"\\file.txt";
+    CreateDirectoryW(base.c_str(), nullptr);
+    CHECK(CreateDirectoryW(mine.c_str(), nullptr) != 0);
+    {
+        HANDLE h = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        CHECK(h != INVALID_HANDLE_VALUE);
+        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    }
+    const std::wstring command = L"cmd /c mklink /J \"" + junction + L"\" \"" + mine + L"\" >nul";
+    CHECK(_wsystem(command.c_str()) == 0);
+
+    StoreResult r = CheckFolderIsPrivate(base + L"\\does-not-exist");
+    CHECK(!r.ok && r.missing);
+    r = CheckFolderIsPrivate(file);
+    CHECK(!r.ok && !r.missing && std::wcscmp(r.reason, L"cache folder path is not a folder") == 0);
+    r = CheckFolderIsPrivate(junction);
+    CHECK(!r.ok && !r.missing && std::wcscmp(r.reason, L"cache folder is a reparse point") == 0);
+    // Created by this (unelevated) user: owned by the user, who is also allowed in the DACL.
+    r = CheckFolderIsPrivate(mine);
+    CHECK(!r.ok && !r.missing);
+    // Owned by SYSTEM on a default Windows install, but its DACL allows Users:
+    // only the DACL check rejects it.
+    wchar_t programData[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"ProgramData", programData, MAX_PATH) != 0) {
+        r = CheckFolderIsPrivate(programData);
+        CHECK(!r.ok && std::wcscmp(r.reason, L"cache folder DACL allows someone other than SYSTEM or Administrators") == 0);
+    }
+
+    RemoveDirectoryW(junction.c_str());  // removes the junction, not its target
+    DeleteFileW(file.c_str());
+    RemoveDirectoryW(mine.c_str());
+    RemoveDirectoryW(base.c_str());
+}
+
+void TestVolumeGuidPath() {
+    std::uint8_t guid[16];
+    std::wstring text;
+    CHECK(ParseVolumeGuidPath(L"\\\\?\\Volume{01234567-89AB-cdef-0123-456789abcdef}\\", guid, text));
+    CHECK(text == L"01234567-89ab-cdef-0123-456789abcdef");
+    const std::uint8_t expected[16] = {0x67, 0x45, 0x23, 0x01, 0xAB, 0x89, 0xEF, 0xCD,
+                                       0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF};
+    CHECK(std::memcmp(guid, expected, 16) == 0);
+    GUID g{};
+    std::memcpy(&g, guid, 16);
+    CHECK(g.Data1 == 0x01234567u && g.Data2 == 0x89AB && g.Data3 == 0xCDEF && g.Data4[0] == 0x01 && g.Data4[7] == 0xEF);
+    CHECK(!ParseVolumeGuidPath(L"\\\\?\\Volume{01234567-89AB-cdef-0123-456789abcdef}", guid, text));  // no backslash
+    CHECK(!ParseVolumeGuidPath(L"\\\\?\\Volume{01234567-89AB-cdef-0123-456789abcdeg}\\", guid, text));
+    CHECK(!ParseVolumeGuidPath(L"\\\\?\\Volume{0123456789AB-cdef-0123-456789abcdef-}\\", guid, text));
+    CHECK(!ParseVolumeGuidPath(L"C:\\", guid, text));
+}
+
 }  // namespace
 
 int main() {
     TestUsnParser();
     TestChangeHelpers();
+    TestCrc32();
+    TestVolumeGuidPath();
+    TestCacheFolderChecks();
+    TestCacheCorruption();
     TestRandomEquivalence();
     TestFolderBecomesVisibleNeedsRescan();
     TestInconsistentBatchesNeedRescan();
     TestMoveOutThenHideParent();
     TestRecordReuse();
     TestRepeatedApplyIsIdempotent();
+    CHECK(g_roundTrips == 60);
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

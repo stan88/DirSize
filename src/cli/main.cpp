@@ -211,6 +211,7 @@ void PrintUsage() {
     WriteLine(L"  dirsize-cli scan <path> [--top N] [--json]");
     WriteLine(L"  dirsize-cli verify <drive letter>      (NTFS, elevated)");
     WriteLine(L"  dirsize-cli watch <drive letter> [seconds]  (NTFS, elevated; default 300)");
+    WriteLine(L"  dirsize-cli cache save|load <drive letter>  (NTFS, elevated)");
     WriteLine();
     WriteLine(L"Walks the folder tree under <path> and reports total size, file and");
     WriteLine(L"folder counts, elapsed time and peak memory use.");
@@ -222,6 +223,10 @@ void PrintUsage() {
     WriteLine();
     WriteLine(L"watch builds the index, keeps it current with the USN journal for the");
     WriteLine(L"given time, then compares it with a fresh full build folder by folder.");
+    WriteLine();
+    WriteLine(L"cache save builds the index and saves it under ProgramData\\DirSize\\cache.");
+    WriteLine(L"cache load loads it, applies the journal changes since the save, compares");
+    WriteLine(L"the result with a fresh full build, and saves it again.");
 }
 
 void PrintText(const std::wstring& displayPath, const WalkResult& r, const RunInfo& info,
@@ -696,6 +701,12 @@ void PrintCatchUp(const wchar_t* what, const dirsize::CatchUpResult& r) {
         WriteLine(Format(L"    files changed %llu, folders created %llu, moved %llu, removed %llu", u.filesChanged,
                          u.foldersCreated, u.foldersMoved, u.foldersRemoved));
     }
+    if (r.vanished != 0) {
+        WriteLine(Format(L"    not returned by the re-query without a delete record: %llu IDs", r.vanished));
+        for (const auto& c : r.vanishedSamples) {
+            WriteLine(Format(L"      id 0x%016llx, reasons 0x%08lx", c.id, static_cast<unsigned long>(c.reasons)));
+        }
+    }
     if (r.needsRescan) WriteLine(Format(L"    NEEDS RESCAN: %s (Win32 error %lu)", r.reason, r.error));
 }
 
@@ -741,6 +752,7 @@ void PrintDifferingFiles(const dirsize::NtfsLiveVolume& volume, const VolumeInde
     }
     WriteLine();
     WriteLine(L"== Files that differ (updated index vs fresh build, by file ID)");
+    WriteLine(L"  Journal state as read by this process; after a cache load, files restored as open count as seen.");
     WriteLine(Format(L"  Differing files %zu", items.size()));
     for (int g = 0; g < 3; ++g) {
         WriteLine(Format(L"    %-17s %llu files, sum of |byte differences| %llu", names[g], count[g], bytes[g]));
@@ -759,6 +771,70 @@ void PrintDifferingFiles(const dirsize::NtfsLiveVolume& volume, const VolumeInde
     }
     if (items.size() > kShown) WriteLine(Format(L"  ... %zu more", items.size() - kShown));
     if (hint != INVALID_HANDLE_VALUE) CloseHandle(hint);
+
+    // Files the fresh build has and the updated index lost: what does a
+    // re-query by ID return now, and does the root listing show them?
+    WriteLine();
+    WriteLine(L"== Re-query of files missing from the updated index (largest first, at most 10)");
+    size_t probed = 0;
+    for (const Item& i : items) {
+        if (i.inUpdated || !i.inFresh || probed == 10) continue;
+        ++probed;
+        const dirsize::IdProbe p = volume.ProbeId(i.id);
+        WriteLine(Format(L"  id 0x%016llx (fresh %llu B, %s): query error %lu, %llu entries, first id 0x%016llx, "
+                         L"%s; listed in root %s (list error %lu)",
+                         i.id, i.fresh.logical, names[group(i)], p.error, p.entries, p.returnedId,
+                         p.found ? L"found" : L"NOT FOUND", p.listedInRoot ? L"yes" : L"no", p.listError));
+        WriteLine(Format(L"    journal reasons read by this process: 0x%08lx",
+                         static_cast<unsigned long>(volume.JournalReasons(i.id))));
+        if (p.found) {
+            WriteLine(Format(L"    attributes 0x%08lx, data %s, %llu B", static_cast<unsigned long>(p.attributes),
+                             p.hasData ? L"yes" : L"no", p.logicalBytes));
+            for (const auto& [parent, name] : p.links) {
+                WriteLine(Format(L"    link: parent 0x%016llx, name %s", parent, name.c_str()));
+            }
+        }
+    }
+    if (probed == 0) WriteLine(L"  none");
+}
+
+// Builds the volume again from scratch and compares it with the maintained
+// index, folder by folder and file by file.
+int CompareWithFresh(dirsize::NtfsLiveVolume& volume, wchar_t drive, const std::wstring& rootPath) {
+    const Usage before = TakeUsage();
+    WriteLine();
+    WriteLine(L"== Compare with a fresh full build");
+    dirsize::NtfsIndexResult fresh = dirsize::BuildNtfsIndex(drive);
+    if (!fresh.ok) {
+        WriteLine(Format(L"  failed: %s (Win32 error %lu)", fresh.failedStep, fresh.error));
+        return 1;
+    }
+    PrintResources(L"fresh full build, a second index in memory", before, TakeUsage());
+    const dirsize::CatchUpResult r = volume.CatchUp();  // include what changed during the fresh build
+    PrintCatchUp(L"last catch-up", r);
+    if (r.needsRescan) return 1;
+    const VolumeIndex live = volume.Live().Compacted();
+    std::uint64_t mismatched = 0;
+    for (const auto& d : live.dirs) {
+        const DirIndex i = volume.Live().FindDir(d.id);
+        if (!volume.Live().DirLive(i) || !(volume.Live().Index().dirs[i].subtree == d.subtree)) ++mismatched;
+    }
+    WriteLine(Format(L"  Maintained totals vs recomputed: %llu folders differ (should be 0)", mismatched));
+    WriteLine(L"  In the lines below, \"layout\" is the updated index and \"walk\" the fresh full build.");
+    const Totals& lt = live.dirs[live.root].subtree;
+    const Totals& ft = fresh.index.dirs[fresh.index.root].subtree;
+    WriteLine(Format(L"  Whole volume: files %+lld, folders %+lld, bytes %+lld, on disk %+lld", Diff(lt.files, ft.files),
+                     Diff(lt.folders, ft.folders), Diff(lt.logicalBytes, ft.logicalBytes),
+                     Diff(lt.allocatedBytes, ft.allocatedBytes)));
+    Comparer comparer{live, fresh.index, rootPath};
+    comparer.listFiles = false;  // files are compared by ID with the fresh build below
+    comparer.Compare(live.root, fresh.index.root, 0);
+    WriteLine(Format(L"  Differing folders %llu, only in updated %llu, only in fresh %llu", comparer.differingFolders,
+                     comparer.onlyInLayout, comparer.onlyInWalk));
+    PrintDifferingFiles(volume, live, fresh.index, rootPath);
+    WriteLine();
+    WriteLine(Format(L"Result: %s", comparer.Differs(lt, ft) ? L"DIFFERENT (see above)" : L"IDENTICAL totals"));
+    return 0;
 }
 
 int RunWatch(const wchar_t* driveArg, unsigned seconds) {
@@ -811,39 +887,85 @@ int RunWatch(const wchar_t* driveArg, unsigned seconds) {
     const Usage u2 = TakeUsage();
     PrintResources(L"watching, mostly asleep between catch-ups", u1, u2);
 
+    return CompareWithFresh(*volume, drive, rootPath);
+}
+
+void PrintSave(const dirsize::CacheSaveResult& s) {
+    if (!s.ok) {
+        WriteLine(Format(L"  save failed: %s (Win32 error %lu)", s.reason, s.error));
+        return;
+    }
+    WriteLine(Format(L"  saved %s (%s); compact and serialize %.3f s, write and flush %.3f s", s.path.c_str(),
+                     FormatBytes(s.bytes).c_str(), s.compactSeconds, s.writeSeconds));
+}
+
+// "cache save": full build, catch up, save. "cache load": load the cache,
+// catch up with the journal (the changes made since the save), compare with
+// a fresh full build, then save again.
+int RunCache(const wchar_t* action, const wchar_t* driveArg) {
+    const std::wstring_view what(action);
+    if ((what != L"save" && what != L"load") || !iswalpha(driveArg[0]) ||
+        (driveArg[1] != L'\0' && driveArg[1] != L':')) {
+        PrintUsage();
+        return 2;
+    }
+    const wchar_t drive = static_cast<wchar_t>(towupper(driveArg[0]));
+    const std::wstring rootPath = std::wstring(1, drive) + L":\\";
+    WriteLine(Format(L"Volume            %c:", drive));
+    WriteLine(Format(L"Elevated          %s", IsElevated() ? L"yes" : L"no"));
+    WriteLine(Format(L"Backup privilege  %s", EnableBackupPrivilege() ? L"enabled" : L"not available"));
+    WriteLine(Format(L"Action            cache %s", action));
+
+    if (what == L"save") {
+        WriteLine();
+        WriteLine(L"== Build");
+        const Usage u0 = TakeUsage();
+        dirsize::NtfsIndexResult build;
+        std::unique_ptr<dirsize::NtfsLiveVolume> volume = dirsize::NtfsLiveVolume::Build(drive, build);
+        if (!volume) {
+            WriteLine(Format(L"  failed: %s (Win32 error %lu)", build.failedStep, build.error));
+            return 1;
+        }
+        const dirsize::CatchUpResult r = volume->CatchUp();
+        PrintCatchUp(L"replay of changes during the scan", r);
+        if (r.needsRescan) return 1;
+        const Usage u1 = TakeUsage();
+        PrintResources(L"build and replay", u0, u1);
+        WriteLine();
+        WriteLine(L"== Save");
+        const dirsize::CacheSaveResult saved = volume->SaveCache();
+        PrintSave(saved);
+        PrintResources(L"save", u1, TakeUsage());
+        WriteLine(Format(L"  applied USN %lld, journal 0x%016llx", volume->AppliedUsn(), volume->JournalId()));
+        return saved.ok ? 0 : 1;
+    }
+
     WriteLine();
-    WriteLine(L"== Compare with a fresh full build");
-    dirsize::NtfsIndexResult fresh = dirsize::BuildNtfsIndex(drive);
-    if (!fresh.ok) {
-        WriteLine(Format(L"  failed: %s (Win32 error %lu)", fresh.failedStep, fresh.error));
+    WriteLine(L"== Load");
+    const Usage u0 = TakeUsage();
+    dirsize::CacheOpenResult opened;
+    std::unique_ptr<dirsize::NtfsLiveVolume> volume = dirsize::NtfsLiveVolume::FromCache(drive, opened);
+    const Usage u1 = TakeUsage();
+    if (!volume) {
+        WriteLine(Format(L"  no usable cache%s: %s (Win32 error %lu)", opened.missing ? L" (missing)" : L"",
+                         opened.reason, opened.error));
+        if (!opened.path.empty()) WriteLine(Format(L"  path %s", opened.path.c_str()));
         return 1;
     }
-    PrintResources(L"fresh full build, a second index in memory", u2, TakeUsage());
-    r = volume->CatchUp();  // include what changed during the fresh build
-    PrintCatchUp(L"last catch-up", r);
+    WriteLine(Format(L"  loaded %s (%s); read %.3f s, validate and rebuild totals %.3f s", opened.path.c_str(),
+                     FormatBytes(opened.bytes).c_str(), opened.readSeconds, opened.parseSeconds));
+    WriteLine(Format(L"  cached at USN %lld, journal 0x%016llx", volume->AppliedUsn(), volume->JournalId()));
+    PrintResources(L"load", u0, u1);
+    WriteLine(Format(L"  Index tables %s", FormatBytes(volume->Live().Index().MemoryBytes()).c_str()));
+    const dirsize::CatchUpResult r = volume->CatchUp();
+    PrintCatchUp(L"catch-up since the save", r);
+    PrintResources(L"catch-up since the save", u1, TakeUsage());
     if (r.needsRescan) return 1;
-    const VolumeIndex live = volume->Live().Compacted();
-    std::uint64_t mismatched = 0;
-    for (const auto& d : live.dirs) {
-        const DirIndex i = volume->Live().FindDir(d.id);
-        if (!volume->Live().DirLive(i) || !(volume->Live().Index().dirs[i].subtree == d.subtree)) ++mismatched;
-    }
-    WriteLine(Format(L"  Maintained totals vs recomputed: %llu folders differ (should be 0)", mismatched));
-    WriteLine(L"  In the lines below, \"layout\" is the updated index and \"walk\" the fresh full build.");
-    const Totals& lt = live.dirs[live.root].subtree;
-    const Totals& ft = fresh.index.dirs[fresh.index.root].subtree;
-    WriteLine(Format(L"  Whole volume: files %+lld, folders %+lld, bytes %+lld, on disk %+lld", Diff(lt.files, ft.files),
-                     Diff(lt.folders, ft.folders), Diff(lt.logicalBytes, ft.logicalBytes),
-                     Diff(lt.allocatedBytes, ft.allocatedBytes)));
-    Comparer comparer{live, fresh.index, rootPath};
-    comparer.listFiles = false;  // files are compared by ID with the fresh build below
-    comparer.Compare(live.root, fresh.index.root, 0);
-    WriteLine(Format(L"  Differing folders %llu, only in updated %llu, only in fresh %llu", comparer.differingFolders,
-                     comparer.onlyInLayout, comparer.onlyInWalk));
-    PrintDifferingFiles(*volume, live, fresh.index, rootPath);
+    const int compared = CompareWithFresh(*volume, drive, rootPath);
     WriteLine();
-    WriteLine(Format(L"Result: %s", comparer.Differs(lt, ft) ? L"DIFFERENT (see above)" : L"IDENTICAL totals"));
-    return 0;
+    WriteLine(L"== Save again");
+    PrintSave(volume->SaveCache());
+    return compared;
 }
 
 }  // namespace
@@ -857,6 +979,9 @@ int wmain(int argc, wchar_t** argv) {
     if ((argc == 3 || argc == 4) && std::wstring_view(argv[1]) == L"watch") {
         const unsigned seconds = argc == 4 ? static_cast<unsigned>(std::wcstoul(argv[3], nullptr, 10)) : 300u;
         return RunWatch(argv[2], seconds);
+    }
+    if (argc == 4 && std::wstring_view(argv[1]) == L"cache") {
+        return RunCache(argv[2], argv[3]);
     }
     if (argc < 3 || std::wstring_view(argv[1]) != L"scan") {
         PrintUsage();

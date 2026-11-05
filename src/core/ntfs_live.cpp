@@ -2,6 +2,7 @@
 
 #include <winioctl.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -83,20 +84,164 @@ std::unique_ptr<NtfsLiveVolume> NtfsLiveVolume::Build(wchar_t drive, NtfsIndexRe
     const std::int64_t startUsn = build.index.usn.nextUsn;
     std::unique_ptr<NtfsLiveVolume> v(new NtfsLiveVolume(drive, std::move(build.index)));
     build.index = VolumeIndex{};
-    const std::wstring volumePath = std::wstring(L"\\\\.\\") + drive + L":";
-    v->volume_ = CreateFileW(volumePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                             nullptr, OPEN_EXISTING, 0, nullptr);
-    const std::wstring rootPath = std::wstring(1, drive) + L":\\";
-    v->root_ = OpenDirectoryForListing(rootPath.c_str());
-    if (v->volume_ == INVALID_HANDLE_VALUE || v->root_ == INVALID_HANDLE_VALUE) {
+    if (const DWORD error = v->OpenHandles(); error != ERROR_SUCCESS) {
         build.ok = false;
         build.failedStep = L"reopen volume for updates";
-        build.error = GetLastError();
+        build.error = error;
         return nullptr;
     }
     v->journalId_ = journalId;
     v->appliedUsn_ = startUsn;
     return v;
+}
+
+DWORD NtfsLiveVolume::OpenHandles() {
+    const std::wstring volumePath = std::wstring(L"\\\\.\\") + drive_ + L":";
+    volume_ = CreateFileW(volumePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                          nullptr, OPEN_EXISTING, 0, nullptr);
+    if (volume_ == INVALID_HANDLE_VALUE) return GetLastError();
+    const std::wstring rootPath = std::wstring(1, drive_) + L":\\";
+    root_ = OpenDirectoryForListing(rootPath.c_str());
+    if (root_ == INVALID_HANDLE_VALUE) return GetLastError();
+    return ERROR_SUCCESS;
+}
+
+std::unique_ptr<NtfsLiveVolume> NtfsLiveVolume::FromCache(wchar_t drive, CacheOpenResult& result) {
+    result = CacheOpenResult{};
+    auto fail = [&](const StoreResult& s) {
+        result.missing = s.missing;
+        result.reason = s.reason;
+        result.error = s.error;
+        return nullptr;
+    };
+    VolumeIdentity identity;
+    if (StoreResult s = GetVolumeIdentity(drive, identity); !s.ok) return fail(s);
+    std::wstring folder;
+    if (StoreResult s = PrepareCacheFolder(false, folder); !s.ok) return fail(s);
+    result.path = CacheFilePath(folder, identity);
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<std::byte> bytes;
+    if (StoreResult s = ReadWholeFile(result.path, kMaxCacheBytes, bytes); !s.ok) return fail(s);
+    result.bytes = bytes.size();
+    result.readSeconds = SecondsSince(t0);
+
+    const auto t1 = std::chrono::steady_clock::now();
+    VolumeIndex index;
+    CacheMeta meta;
+    const CacheLoadResult loaded = DeserializeIndex(bytes.data(), bytes.size(), index, meta);
+    result.parseSeconds = SecondsSince(t1);
+    result.status = loaded.status;
+    if (loaded.status != CacheLoadStatus::Ok) {
+        result.reason = loaded.reason;
+        return nullptr;
+    }
+    if (std::memcmp(meta.volumeGuid, identity.guid, sizeof(identity.guid)) != 0) {
+        result.reason = L"cache is for another volume";
+        return nullptr;
+    }
+    if (meta.volumeSerial != identity.serial) {
+        result.reason = L"volume serial number changed (formatted?)";
+        return nullptr;
+    }
+    std::unique_ptr<NtfsLiveVolume> v(new NtfsLiveVolume(drive, std::move(index)));
+    if (const DWORD error = v->OpenHandles(); error != ERROR_SUCCESS) {
+        result.reason = L"cannot open the volume for updates";
+        result.error = error;
+        return nullptr;
+    }
+    std::uint64_t rootId = 0;
+    const VolumeIndex& x = v->live_.Index();
+    if (!QueryFileId(v->root_, rootId) || rootId != x.dirs[x.root].id) {
+        result.reason = L"cache root folder ID does not match the volume";
+        return nullptr;
+    }
+    v->journalId_ = meta.journalId;
+    v->appliedUsn_ = meta.appliedUsn;
+    for (std::uint64_t id : meta.openFileIds) {
+        v->open_.Track(id);
+        v->seen_.emplace(id, 0);  // seen in the journal before the save
+    }
+    result.ok = true;
+    return v;
+}
+
+CacheSaveResult NtfsLiveVolume::SaveCache() const {
+    CacheSaveResult r;
+    auto fail = [&](const StoreResult& s) {
+        r.reason = s.reason;
+        r.error = s.error;
+        return r;
+    };
+    if (live_.Broken()) {
+        r.reason = L"index inconsistent; not saved";
+        return r;
+    }
+    VolumeIdentity identity;
+    if (StoreResult s = GetVolumeIdentity(drive_, identity); !s.ok) return fail(s);
+    std::wstring folder;
+    if (StoreResult s = PrepareCacheFolder(true, folder); !s.ok) return fail(s);
+    r.path = CacheFilePath(folder, identity);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    CacheMeta meta;
+    std::memcpy(meta.volumeGuid, identity.guid, sizeof(identity.guid));
+    meta.volumeSerial = identity.serial;
+    meta.journalId = journalId_;
+    meta.appliedUsn = appliedUsn_;
+    for (const auto& [id, unused] : open_.Ids()) {
+        (void)unused;
+        meta.openFileIds.push_back(id);
+    }
+    std::sort(meta.openFileIds.begin(), meta.openFileIds.end());
+    const std::vector<std::byte> bytes = SerializeIndex(live_.Compacted(), meta);
+    r.compactSeconds = SecondsSince(t0);
+    r.bytes = bytes.size();
+    const auto t1 = std::chrono::steady_clock::now();
+    if (StoreResult s = WriteFileReplacing(r.path, bytes); !s.ok) return fail(s);
+    r.writeSeconds = SecondsSince(t1);
+    r.ok = true;
+    return r;
+}
+
+IdProbe NtfsLiveVolume::ProbeId(std::uint64_t id) const {
+    IdProbe p;
+    const std::uint64_t record = id & kRecordNumberMask;
+    std::vector<std::uint64_t> storage((offsetof(QUERY_FILE_LAYOUT_INPUT, Filter) + sizeof(FILE_REFERENCE_RANGE) + 7) / 8);
+    auto* input = reinterpret_cast<QUERY_FILE_LAYOUT_INPUT*>(storage.data());
+    input->FilterEntryCount = 1;
+    input->FilterType = QUERY_FILE_LAYOUT_FILTER_TYPE_FILEID;
+    input->Filter.FileReferenceRanges[0].StartingFileReferenceNumber = record;
+    input->Filter.FileReferenceRanges[0].EndingFileReferenceNumber = record;
+    std::vector<std::byte> out(256 * 1024);
+    LayoutParseStats stats;
+    for (bool first = true;; first = false) {
+        input->Flags = QUERY_FILE_LAYOUT_INCLUDE_NAMES | QUERY_FILE_LAYOUT_INCLUDE_STREAMS |
+                       QUERY_FILE_LAYOUT_INCLUDE_STREAMS_WITH_NO_CLUSTERS_ALLOCATED |
+                       (first ? QUERY_FILE_LAYOUT_RESTART : 0);
+        DWORD returned = 0;
+        if (!DeviceIoControl(volume_, FSCTL_QUERY_FILE_LAYOUT, input, static_cast<DWORD>(storage.size() * 8),
+                             out.data(), static_cast<DWORD>(out.size()), &returned, nullptr)) {
+            const DWORD error = GetLastError();
+            if (error != ERROR_HANDLE_EOF) p.error = error;
+            break;
+        }
+        const std::uint32_t count = ParseLayoutBuffer(out.data(), returned, stats, [&](const LayoutEntry& e) {
+            ++p.entries;
+            if (p.entries == 1) p.returnedId = e.id;
+            if (e.id != id) return;
+            p.found = true;
+            p.attributes = e.attributes;
+            p.hasData = e.hasData;
+            p.logicalBytes = e.dataLogicalBytes;
+            for (const LayoutLink& l : e.links) p.links.push_back({l.parentId, std::wstring(l.name)});
+        });
+        if (count == 0) break;
+    }
+    DirectoryLister lister;
+    p.listError = lister.List(root_, [&](const ListedItem& item) {
+        if (item.hasId && item.id == id) p.listedInRoot = true;
+    });
+    return p;
 }
 
 CatchUpResult NtfsLiveVolume::CatchUp() {
@@ -139,7 +284,7 @@ CatchUpResult NtfsLiveVolume::CatchUp() {
                                                          ++r.records;
                                                          collector.Add(c);
                                                          open_.Observe(c);
-                                                         seen_.insert(c.id);
+                                                         seen_[c.id] |= c.reason;
                                                      });
         if (status != UsnParseStatus::Ok) return Rescan(r, L"malformed journal record");
         if (collector.Size() > kMaxChangedIdsPerCatchUp) return Rescan(r, L"too many changes");
@@ -184,6 +329,15 @@ CatchUpResult NtfsLiveVolume::CatchUp() {
     }
     if (malformed) return Rescan(r, L"malformed layout entry");
     r.entries = entries.size();
+    {
+        std::unordered_set<std::uint64_t> requeried;
+        for (const CurrentEntry& e : entries) requeried.insert(e.id);
+        for (const ChangedId& c : changed) {
+            if (requeried.count(c.id) || (c.reasons & USN_REASON_FILE_DELETE)) continue;
+            ++r.vanished;
+            if (r.vanishedSamples.size() < 16) r.vanishedSamples.push_back(c);
+        }
+    }
 
     std::unordered_set<std::uint64_t> rootListing;
     {

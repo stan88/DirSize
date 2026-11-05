@@ -53,7 +53,13 @@ DWORD DirectoryLister::List(HANDLE dir, const std::function<void(const ListedIte
     const auto bytes = static_cast<DWORD>(buffer_.size() * sizeof(ULONGLONG));
     bool first = true;
     for (;;) {
-        const FILE_INFO_BY_HANDLE_CLASS cls = useIds_ ? FileIdBothDirectoryInfo : FileFullDirectoryInfo;
+        // Calls on the same handle resume the enumeration where the last one
+        // stopped, so the first call of each List() restarts it; otherwise a
+        // handle listed before (the root handle kept by NtfsLiveVolume)
+        // would return nothing.
+        const FILE_INFO_BY_HANDLE_CLASS cls =
+            useIds_ ? (first ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo)
+                    : (first ? FileFullDirectoryRestartInfo : FileFullDirectoryInfo);
         if (!GetFileInformationByHandleEx(dir, cls, buffer_.data(), bytes)) {
             const DWORD error = GetLastError();
             if (error == ERROR_NO_MORE_FILES) {

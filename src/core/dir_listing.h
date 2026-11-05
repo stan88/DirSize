@@ -26,7 +26,9 @@ public:
 
     // Lists every entry of an open directory handle except "." and "..".
     // Uses FileIdBothDirectoryInfo (gives file IDs) and falls back to
-    // FileFullDirectoryInfo for file systems that do not support it.
+    // FileFullDirectoryInfo for file systems that do not support it. Each
+    // call restarts the enumeration (the *RestartInfo classes), so the same
+    // handle can be listed again.
     // Returns ERROR_SUCCESS or the Win32 error that stopped the listing.
     DWORD List(HANDLE dir, const std::function<void(const ListedItem&)>& onItem);
 

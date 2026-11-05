@@ -39,8 +39,12 @@ add_library(dirsize_core STATIC
     src/core/live_index.cpp
     src/core/usn_parser.cpp
     src/core/ntfs_live.cpp
+    src/core/crc32.cpp
+    src/core/index_cache.cpp
+    src/core/cache_store.cpp
 )
 target_include_directories(dirsize_core PUBLIC src)
+target_link_libraries(dirsize_core PUBLIC shell32 ole32 advapi32)
 
 add_executable(dirsize-cli src/cli/main.cpp)
 target_link_libraries(dirsize-cli PRIVATE dirsize_core psapi)

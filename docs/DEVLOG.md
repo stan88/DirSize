@@ -525,6 +525,84 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 - **出現過、已關閉的 8 個**：多半是同一個 MFT 記錄號、序號不同的成對項目，也就是檔案被刪除後重建（例如「寫入暫存檔再改名覆蓋」）。全新建立的是舊序號，更新後的索引是新序號，而且舊序號已經無法開啟（error 87）。這是比較方法本身的時間差：全新建立先完成，最後一次追日誌才在之後套用了這段時間的變動。這不是增量更新的錯誤。整顆的「檔案 −1」也是同樣的原因。
 - **結論**：增量更新在日誌看得到的範圍內是正確的。看不到的只有建索引前就開著的檔案，要靠定期重掃，或是依第 4 階段的構想，把重掃前後大小不同的檔案加進追蹤清單。
 
+### 2026-11-05 第 3 階段第 4 步：快取檔
+
+設計與實作細節見 [DESIGN-phase3.md](DESIGN-phase3.md) 第 6 節。
+
+- **新增**：
+  - `crc32`：依 PNG 規格第 5.5 節的描述自己實作，沒有參考範例程式碼；
+  - `index_cache`：格式與驗證，純位元組處理；
+  - `cache_store`：位置、權限檢查、寫入與讀取；
+  - `NtfsLiveVolume::FromCache` 和 `SaveCache`；
+  - CLI `cache save|load <磁碟>` 和 `scripts/cache.ps1`。
+- **查證**：
+  - `icacls C:\ProgramData`：SYSTEM 和 Administrators 有完整權限，`CREATOR OWNER` 有完整權限（只繼承給子項目），`BUILTIN\Users` 可以讀取、執行，也可以建立資料夾和檔案。所以一般使用者可以搶先建立 `DirSize` 資料夾，成為它的擁有者。已用上述權限檢查處理。
+  - CRC-32 的對照值用 Python 的 `zlib.crc32` 算出，因為 PNG 規格本身沒有提供測試向量；zlib 用的是和 PNG、gzip 相同的 CRC（RFC 1952）。`"123456789"` 是 `0xCBF43926`。
+  - `GetSecurityInfo` 的文件沒有說明 NULL DACL 和沒有 DACL 的差別。程式遇到 NULL 一律拒絕，兩種情況都安全。
+- **測試**：`live-tests` 從 99 項增加到 5,412 項。多出來的大多是「每一種截斷長度」和「每一個位元組改壞」都必須被拒絕。
+  - **往返測試**：接進隨機等價測試。每個種子跑到第 150 批時存檔再載入，結果必須相同，再存一次的位元組也要完全相同；之後改用載入的索引繼續套用變動，60 個種子都通過。
+  - **結構檢查**：先改壞內容、再重算檢查碼，這樣才測得到結構檢查本身，否則所有錯誤都只會被檢查碼擋下。案例包括上層超出範圍、循環、ID 順序、連結數不符、名稱超出範圍、保留欄位、溢位、版本、筆數乘法溢位。
+  - **突變檢查**：一次拿掉一項檢查，看有沒有測試因此失敗。第一次有 4 項沒被抓到，補了測試之後，21 項都會讓測試失敗。其中一項是測試本身寫錯檔頭位移，改用具名常數，並加上 `static_assert` 確認。
+  - **資料夾權限檢查**：用一般權限做得出來的情況都測了：
+    - 不存在的路徑：回報「沒有快取」；
+    - 檔案：不是資料夾，拒絕；
+    - junction：重新導向點，拒絕；
+    - 自己建立的資料夾：拒絕；
+    - `ProgramData` 本身：擁有者是 SYSTEM，但 DACL 允許 Users，只有 DACL 檢查會拒絕它。
+
+    同樣做了突變檢查，5 項檢查拿掉任何一項，都會有測試失敗。會「通過」的資料夾要用提權才建立得出來，所以這部分由實機測試涵蓋。
+  - ASan 版也通過。
+  - 隨機測試的「files changed」統計從 35,872 變成 35,908，原因是載入的索引已經整理過，沒有標記為刪除的資料夾。日誌之後再提到這些 ID 時，會被分類成檔案。結果不受影響，每一批都和全新建立逐項比對。
+
+#### 快取實測：存檔 → 載入 → 重新開機 → 載入（2026-11-05，提權）
+
+| 項目 | C: | D: |
+|---|---|---|
+| 快取檔大小 | 42.6 MB | 29.2 MB |
+| 存檔（整理＋寫入並清到磁碟） | 0.40 s | 0.20 s |
+| 載入（讀檔＋驗證＋重算合計） | 0.15 s | 0.10 s |
+| 同一次開機內：補上存檔後的變動 | 0.014 s（450 個 ID） | 0.01 s |
+| 重新開機後：補上關機、開機期間的變動 | 0.62 s（8,293 個 ID，28,491 筆記錄） | 0.34 s（3,311 個 ID） |
+| 對照：開機後立刻整顆重建 | 15.6 s（CPU 54%） | 20.2 s（CPU 51%） |
+
+- 一般權限讀取 `C:\ProgramData\DirSize` 被拒絕，資料夾權限有效。
+- 「載入 → 存檔 → 再載入」：第二次載入讀到的位置，正好是第一次載入後存檔的位置。
+- **重新開機後日誌接得上**：關機、開機這段期間的記錄都還在，沒有要求整顆重掃。之前「關機期間不會用掉日誌」只是依文件推論，這次實測確認了。
+- 開機後立刻整顆重建比平常慢 3～4 倍（平常 4～5 s），因為磁碟正忙。有快取時，開機只需約 0.5～0.8 秒。
+- 同一次開機內載入，D: 和全新建立完全相同。C: 差約 0.2～0.3 MB，都是「從沒出現在日誌」、一直開著寫的檔案，和 watch 的結論相同。
+
+#### 找到的 bug：同一個 handle 第二次列目錄得到空清單
+
+- **現象**：重新開機後載入，C: 少了 36,598,390,784 B，正好是根目錄 4 個檔案的大小：`hiberfil.sys`、`pagefile.sys`、`swapfile.sys`、`DumpStack.log.tmp`。四個都是開機時由系統打開、一直不關的檔案。
+- **診斷**：加了兩項輸出：
+  - 追日誌時，列出重查沒有回傳、日誌也沒有刪除記錄的 ID；
+  - 比對時，對「更新後的索引沒有、全新建立有」的檔案，當場用 ID 重查一次，並檢查根目錄清單。
+
+  結果：用 ID 重查**找得到**這 4 個檔案，大小、上層、名稱都正確，但根目錄清單裡**沒有**它們。
+- **原因**：`NtfsLiveVolume` 重複使用同一個根目錄 handle 列清單。[FILE_INFO_BY_HANDLE_CLASS](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ne-minwinbase-file_info_by_handle_class) 寫明：同一個 handle 再呼叫，會接著上次列完的位置繼續。所以從第二次追日誌開始，根目錄清單都是空的，被重查到的根目錄檔案依規則都不算。這 4 個檔案一直開著，`OpenFileTracker` 每次都會重查它們，所以第二次追日誌時就被拿掉了。全新建立每次都新開 handle，所以不受影響。
+- **修正**：`DirectoryLister::List` 的第一次呼叫改用 `FileIdBothDirectoryRestartInfo`（或 `FileFullDirectoryRestartInfo`），文件寫的是「強制從頭開始列」。
+- **測試**：新增 `TestListSameHandleTwice`：同一個 handle 列 300 個檔案的資料夾 5 次。修正前，除了第一次之外都是 0 個；修正後每次都是 300 個。`core-tests` 有 434 項檢查。
+- **為什麼之前的測試沒抓到**：`live-tests` 的根目錄清單是模擬的，沒有用到真的 handle。watch 實測時，根目錄的檔案剛好很少變動。
+
+#### 修正後再驗證：存檔 → 重新開機 → 載入（2026-11-05，提權）
+
+| 項目 | C: | D: |
+|---|---|---|
+| 載入 | 0.19 s | 0.10 s |
+| 補上關機、開機期間的變動 | 0.66 s（7,905 個 ID，26,027 筆記錄） | 0.32 s（9,123 個 ID） |
+| 需要整顆重掃 | 沒有 | 沒有 |
+| 維護的合計 vs 從頭重算 | 0 個資料夾不同 | 0 個資料夾不同 |
+| 和全新建立比較 | 檔案 +3、資料夾 −1、位元組 +9,972,644 | 檔案 +1，位元組 0 |
+
+- **根目錄那 4 個檔案不再遺失**：整顆的差異從 −36.6 GB 變成 +10 MB。
+- C: 剩下的 71 個不同檔案：
+  - 從沒出現在日誌：0 個；
+  - 出現過、已關閉：54 個；
+  - 仍在追蹤：17 個。
+
+  其中「全新建立有、更新後沒有」的檔案，當場用 ID 重查時都已經不存在了，同一個 MFT 記錄號已換成更新的序號，也就是檔案已被刪除或取代。這是比較方法本身的時間差：開機後全新建立要 8 秒，期間磁碟一直在變，之後最後一次追日誌又套用了 748 個變動。更新後的索引反映的是比較晚的狀態。
+- 「重查沒有回傳、日誌也沒有刪除記錄」的 ID，兩顆各 1 個。日誌原因含 `FILE_CREATE` 和 `CLOSE`，判斷是讀完日誌到重查之間，檔案就被刪除了，它的刪除記錄會在下一次追日誌時讀到。
+
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
 - 實測：`FSCTL_QUERY_FILE_LAYOUT` 在一般權限下無法使用（錯誤 1）；逐目錄掃描可以用，但讀不到部分資料夾。
@@ -584,6 +662,23 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | cli watch | [GetProcessIoCounters](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getprocessiocounters) |
 | cli watch | [IO_COUNTERS](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-io_counters) |
 | cli watch | [PROCESS_MEMORY_COUNTERS](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters) |
+| 快取 | [SHGetKnownFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath) |
+| 快取 | [KNOWNFOLDERID（FOLDERID_ProgramData）](https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid) |
+| 快取 | [ConvertStringSecurityDescriptorToSecurityDescriptorW](https://learn.microsoft.com/en-us/windows/win32/api/sddl/nf-sddl-convertstringsecuritydescriptortosecuritydescriptorw) |
+| 快取 | [Security Descriptor String Format](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-string-format) |
+| 快取 | [ACE Strings](https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-strings) |
+| 快取 | [SID Strings](https://learn.microsoft.com/en-us/windows/win32/secauthz/sid-strings) |
+| 快取 | [GetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo) |
+| 快取 | [GetAce](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-getace) |
+| 快取 | [ACL_SIZE_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-acl_size_information) |
+| 快取 | [ACE_HEADER](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-ace_header)；`ACCESS_ALLOWED_ACE` 的 `SidStart` 依 SDK 標頭檔 `winnt.h` |
+| 快取 | [IsWellKnownSid](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-iswellknownsid)、[WELL_KNOWN_SID_TYPE](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ne-winnt-well_known_sid_type) |
+| 快取 | [GetVolumeNameForVolumeMountPointW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumenameforvolumemountpointw) |
+| 快取 | [GetVolumeInformationW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationw)（比較用，沒有採用） |
+| 快取 | [FSCTL_GET_NTFS_VOLUME_DATA](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_get_ntfs_volume_data)、[NTFS_VOLUME_DATA_BUFFER](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-ntfs_volume_data_buffer) |
+| 快取 | [FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers) |
+| 快取 | [CreateDirectoryW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw) |
+| 快取 | [PNG Specification (Third Edition) 5.5 CRC algorithm](https://www.w3.org/TR/png-3/#5CRC-algorithm) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |

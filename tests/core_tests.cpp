@@ -565,6 +565,37 @@ void TestWalkerTree() {
 
 }  // namespace
 
+// Listing the same folder twice with one handle must return every item both
+// times: GetFileInformationByHandleEx resumes an enumeration on the same
+// handle, so each List() has to restart it (a bug found in Phase 3: catch-ups
+// after the first saw an empty root listing).
+void TestListSameHandleTwice() {
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    const std::wstring root = std::wstring(temp) + L"dirsize-list-test-" + std::to_wstring(GetCurrentProcessId());
+    CHECK(CreateDirectoryW(root.c_str(), nullptr));
+    for (int i = 0; i < 300; ++i) CHECK(WriteFileBytes(root + L"\\file-" + std::to_wstring(i) + L".txt", 1));
+    HANDLE h = OpenDirectoryForListing(root.c_str());
+    CHECK(h != INVALID_HANDLE_VALUE);
+    if (h != INVALID_HANDLE_VALUE) {
+        for (int round = 0; round < 3; ++round) {
+            DirectoryLister lister;  // a new lister each round, as CatchUp does
+            size_t n = 0;
+            CHECK(lister.List(h, [&](const ListedItem&) { ++n; }) == ERROR_SUCCESS);
+            CHECK_EQ(n, 300);
+        }
+        DirectoryLister reused;  // and one lister used repeatedly
+        for (int round = 0; round < 2; ++round) {
+            size_t n = 0;
+            CHECK(reused.List(h, [&](const ListedItem&) { ++n; }) == ERROR_SUCCESS);
+            CHECK_EQ(n, 300);
+        }
+        CloseHandle(h);
+    }
+    for (int i = 0; i < 300; ++i) DeleteFileW((root + L"\\file-" + std::to_wstring(i) + L".txt").c_str());
+    RemoveDirectoryW(root.c_str());
+}
+
 int main() {
     TestParserBasic();
     TestParserTruncation();
@@ -573,6 +604,7 @@ int main() {
     TestLayoutBuilder();
     TestLayoutBuilderNoRoot();
     TestWalkerTree();
+    TestListSameHandleTwice();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
