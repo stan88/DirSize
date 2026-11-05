@@ -59,6 +59,15 @@ public:
     void Observe(const UsnChange& c);
     void Forget(std::uint64_t id) { open_.erase(id); }
     void Track(std::uint64_t id) { open_[id] = true; }  // e.g. restored from a cache
+    // Keeps at most `limit` IDs (which ones is unspecified); returns how many were dropped.
+    size_t TrimTo(size_t limit) {
+        size_t dropped = 0;
+        while (open_.size() > limit) {
+            open_.erase(open_.begin());
+            ++dropped;
+        }
+        return dropped;
+    }
     const std::unordered_map<std::uint64_t, bool>& Ids() const { return open_; }
     size_t Size() const { return open_.size(); }
 

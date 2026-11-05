@@ -26,6 +26,7 @@
 #include "core/ntfs_live.h"
 #include "core/path_util.h"
 #include "core/walk_index.h"
+#include "client/pipe_client.h"
 
 namespace {
 
@@ -212,6 +213,8 @@ void PrintUsage() {
     WriteLine(L"  dirsize-cli verify <drive letter>      (NTFS, elevated)");
     WriteLine(L"  dirsize-cli watch <drive letter> [seconds]  (NTFS, elevated; default 300)");
     WriteLine(L"  dirsize-cli cache save|load <drive letter>  (NTFS, elevated)");
+    WriteLine(L"  dirsize-cli status [--console]              (asks the DirSize service)");
+    WriteLine(L"  dirsize-cli query <folder> [--start N] [--count N] [--console]");
     WriteLine();
     WriteLine(L"Walks the folder tree under <path> and reports total size, file and");
     WriteLine(L"folder counts, elapsed time and peak memory use.");
@@ -227,6 +230,10 @@ void PrintUsage() {
     WriteLine(L"cache save builds the index and saves it under ProgramData\\DirSize\\cache.");
     WriteLine(L"cache load loads it, applies the journal changes since the save, compares");
     WriteLine(L"the result with a fresh full build, and saves it again.");
+    WriteLine();
+    WriteLine(L"status and query ask the DirSize service through its pipe; no elevation");
+    WriteLine(L"needed. --console accepts a pipe served by \"dirsize-service console\"");
+    WriteLine(L"instead of the installed service (tests only).");
 }
 
 void PrintText(const std::wstring& displayPath, const WalkResult& r, const RunInfo& info,
@@ -968,6 +975,93 @@ int RunCache(const wchar_t* action, const wchar_t* driveArg) {
     return compared;
 }
 
+// ---- service client ----------------------------------------------------------------
+
+const wchar_t* ServiceErrorName(dirsize::proto::ErrorCode c) {
+    using dirsize::proto::ErrorCode;
+    switch (c) {
+        case ErrorCode::BadRequest: return L"bad request";
+        case ErrorCode::UnsupportedVersion: return L"unsupported protocol version";
+        case ErrorCode::PathRejected: return L"path rejected (only canonical local drive-letter paths: no UNC, device paths, . or ..)";
+        case ErrorCode::NotFound: return L"not found";
+        case ErrorCode::AccessDenied: return L"access denied (you may not list this folder)";
+        case ErrorCode::NotIndexed: return L"volume not indexed";
+        case ErrorCode::Busy: return L"busy";
+        case ErrorCode::Internal: return L"internal error";
+    }
+    return L"?";
+}
+
+bool ConnectToService(dirsize::client::PipeClient& client, bool console) {
+    dirsize::client::ClientError e;
+    if (!client.Connect(!console, e)) {
+        WriteLine(Format(L"cannot use the service: %s (Win32 error %lu)", e.what.c_str(), e.win32));
+        return false;
+    }
+    if (console) {
+        WriteLine(Format(L"warning: --console skips the check that the pipe belongs to the DirSize service "
+                         L"(server process %lu)", client.ServerProcessId()));
+    }
+    return true;
+}
+
+void ReportFailure(const dirsize::client::ClientError& e, const dirsize::proto::ErrorResponse& serverError) {
+    if (e.win32 == ERROR_SUCCESS) {
+        WriteLine(Format(L"service: %s", ServiceErrorName(serverError.code)));
+    } else {
+        WriteLine(Format(L"%s (Win32 error %lu)", e.what.c_str(), e.win32));
+    }
+}
+
+int RunServiceStatus(bool console) {
+    dirsize::client::PipeClient client;
+    if (!ConnectToService(client, console)) return 1;
+    dirsize::proto::StatusResponse status;
+    dirsize::proto::ErrorResponse serverError;
+    dirsize::client::ClientError e;
+    if (!client.Status(status, serverError, e)) {
+        ReportFailure(e, serverError);
+        return 1;
+    }
+    for (const auto& v : status.volumes) {
+        const wchar_t* state = v.state == dirsize::proto::VolumeState::Ready      ? L"ready"
+                               : v.state == dirsize::proto::VolumeState::Updating ? L"updating"
+                                                                                  : L"no index yet";
+        std::wstring age = v.secondsSinceCatchUp == UINT64_MAX ? std::wstring(L"never")
+                                                               : std::to_wstring(v.secondsSinceCatchUp) + L" s ago";
+        WriteLine(Format(L"%c:  %-12s index %s, last catch-up %s", v.drive, state, FormatBytes(v.memoryBytes).c_str(),
+                         age.c_str()));
+    }
+    if (status.volumes.empty()) WriteLine(L"no volumes indexed");
+    return 0;
+}
+
+int RunServiceQuery(const std::wstring& path, std::uint32_t start, std::uint32_t count, bool console) {
+    dirsize::client::PipeClient client;
+    if (!ConnectToService(client, console)) return 1;
+    const auto t0 = std::chrono::steady_clock::now();
+    dirsize::proto::FolderResponse folder;
+    dirsize::proto::ErrorResponse serverError;
+    dirsize::client::ClientError e;
+    if (!client.QueryFolder({path, start, count}, folder, serverError, e)) {
+        ReportFailure(e, serverError);
+        return 1;
+    }
+    const double ms = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 1000;
+    const auto& t = folder.totals;
+    WriteLine(Format(L"%s%s", path.c_str(), folder.updating ? L"  (updating: a rescan is running)" : L""));
+    WriteLine(Format(L"  size %s (%llu bytes), on disk %s, files %llu, folders %llu", FormatBytes(t.logicalBytes).c_str(),
+                     t.logicalBytes, FormatBytes(t.allocatedBytes).c_str(), t.files, t.folders));
+    WriteLine(Format(L"  child folders %u, showing %u from %u (largest on disk first); answered in %.1f ms",
+                     folder.childCount, static_cast<unsigned>(folder.children.size()), folder.pageStart, ms));
+    for (const auto& c : folder.children) {
+        WriteLine(Format(L"  %12s  %12s  %s%s", FormatBytes(c.totals.allocatedBytes).c_str(),
+                         FormatBytes(c.totals.logicalBytes).c_str(), c.name.c_str(),
+                         c.accessible ? L"" : L"  (no access)"));
+    }
+    return 0;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -979,6 +1073,32 @@ int wmain(int argc, wchar_t** argv) {
     if ((argc == 3 || argc == 4) && std::wstring_view(argv[1]) == L"watch") {
         const unsigned seconds = argc == 4 ? static_cast<unsigned>(std::wcstoul(argv[3], nullptr, 10)) : 300u;
         return RunWatch(argv[2], seconds);
+    }
+    if (argc >= 2 && std::wstring_view(argv[1]) == L"status") {
+        const bool console = argc == 3 && std::wstring_view(argv[2]) == L"--console";
+        if (argc > 3 || (argc == 3 && !console)) {
+            PrintUsage();
+            return 2;
+        }
+        return RunServiceStatus(console);
+    }
+    if (argc >= 3 && std::wstring_view(argv[1]) == L"query") {
+        std::uint32_t start = 0, count = 50;
+        bool console = false;
+        for (int i = 3; i < argc; ++i) {
+            const std::wstring_view a = argv[i];
+            if (a == L"--console") {
+                console = true;
+            } else if (a == L"--start" && i + 1 < argc) {
+                start = static_cast<std::uint32_t>(std::wcstoul(argv[++i], nullptr, 10));
+            } else if (a == L"--count" && i + 1 < argc) {
+                count = static_cast<std::uint32_t>(std::wcstoul(argv[++i], nullptr, 10));
+            } else {
+                PrintUsage();
+                return 2;
+            }
+        }
+        return RunServiceQuery(argv[2], start, count, console);
     }
     if (argc == 4 && std::wstring_view(argv[1]) == L"cache") {
         return RunCache(argv[2], argv[3]);

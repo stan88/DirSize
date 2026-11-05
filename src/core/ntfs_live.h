@@ -32,6 +32,11 @@ constexpr size_t kMaxRangesPerQuery = 10000;
 // Above this many changed IDs a full scan is faster (Phase 3 probe: 100,000
 // IDs took over 20 s, a full scan of the system volume about 9 s).
 constexpr size_t kMaxChangedIdsPerCatchUp = 50000;
+// Files tracked as open are re-queried on every catch-up. A cap keeps that
+// cost bounded (the probe measured about 0.4 s per 10,000 IDs; 1,000 IDs
+// every 5 s is under 1% of one core). Beyond it some are dropped: they may
+// lag until the next rescan, which is better than a busy service.
+constexpr size_t kMaxTrackedOpenFiles = 1000;
 
 struct CatchUpResult {
     bool needsRescan = false;
@@ -42,6 +47,7 @@ struct CatchUpResult {
     std::uint64_t records = 0;
     std::uint64_t changedIds = 0;   // from the journal records read now
     std::uint64_t openTracked = 0;  // still-open files re-queried as well
+    std::uint64_t openDropped = 0;  // tracked files dropped by kMaxTrackedOpenFiles
     std::uint64_t ranges = 0;
     std::uint64_t entries = 0;  // layout entries returned by the re-query
     std::uint64_t layoutCalls = 0;
@@ -117,6 +123,15 @@ public:
     CatchUpResult CatchUp();
 
     IdProbe ProbeId(std::uint64_t id) const;
+
+    // Decision 8.3: files whose size differed between the previous index and
+    // a full rescan are mostly files held open; tracking them makes every
+    // catch-up re-query them, so the error does not build up again.
+    void TrackFiles(const std::vector<std::uint64_t>& ids) {
+        for (std::uint64_t id : ids) open_.Track(id);
+    }
+    size_t TrackedFiles() const { return open_.Size(); }
+    wchar_t Drive() const { return drive_; }
 
     const LiveIndex& Live() const { return live_; }
     std::uint64_t JournalId() const { return journalId_; }

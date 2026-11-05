@@ -696,6 +696,93 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 
   其餘 24 項，拿掉任何一項都會有測試失敗。
 
+#### 第 3 步：服務本體（2026-11-05）
+
+- **新增**：
+  - `src/service/volume_worker`：每顆磁碟一個執行緒，負責：
+    - 啟動時載入快取並追日誌，沒有可用快取就重掃；
+    - 每 5 秒追一次日誌；
+    - 回答查詢：子資料夾依磁碟用量排序並分頁；
+    - 需要重掃時，在背景模式的執行緒上建新索引，期間用舊索引回答，並標示「更新中」；
+    - 重掃完成後，把大小不同的檔案加進追蹤清單（8.3）；
+    - 依決定的時機存快取。
+  - `src/service/pipe_server`：
+    - 4 個 pipe 實例，overlapped I/O，每個等待都有逾時；
+    - 每則請求都先檢查呼叫者能否列出那個資料夾（`AccessCheck`），子資料夾也逐一判斷是否標「沒有權限」；
+    - 格式錯誤就中斷該連線。
+  - `src/service/service_core`：
+    - Job Object 上限 1 個核心，加上 EcoQoS；
+    - 列出本機固定式 NTFS 磁碟；
+    - 日誌寫在私有的 `ProgramData\DirSize\service.log`，超過 1 MB 時保留一份舊檔。
+  - `src/service/service_main`（`dirsize-service`）：
+    - 以服務執行，接受 STOP 和 PRESHUTDOWN；
+    - `console` 主控台模式；
+    - `install`：把執行檔複製到 `Program Files\DirSize` 再註冊，因為服務以 SYSTEM 執行，執行檔不能放在一般使用者寫得到的地方。註冊時設定：
+      - 延遲自動啟動；
+      - 失敗時 1 分鐘後重啟，最多兩次；
+      - 必要權限只有 SeChangeNotifyPrivilege；
+      - 服務 SID 用 UNRESTRICTED；
+    - `uninstall`。
+  - `src/client/pipe_client`：以識別等級連線，送出請求前確認 pipe 的伺服器行程就是 SCM 回報的 DirSize 服務。
+  - CLI `status`、`query <資料夾>`，以及 `scripts/service-test.ps1`。
+- **不採用的設計**：
+  - 中斷連線前不呼叫 `FlushFileBuffers`：文件寫明它會等到前端讀完，故意不讀的前端就能卡住一個實例。改成寫完回應後，等前端關閉或逾時。
+  - 不降低記憶體優先順序：索引一直在用，被調出記憶體反而會讓查詢變慢。
+- **一般權限的冒煙測試**：以一般權限執行時打不開磁碟，所以所有磁碟都被略過，但 pipe 和權限檢查都測得到：
+  - 服務沒有安裝時，一般的前端拒絕連線（錯誤 1060，服務不存在）。
+  - 用 `--console` 測試旗標時：沒有索引的磁碟回「沒有索引」；`ProgramData\DirSize` 和 `System Volume Information` 回「沒有權限」；UNC、裝置路徑、`..` 回「路徑不接受」；不存在的路徑回「找不到」。
+  - 已經有一個服務在執行時，第二個行程建立 pipe 會失敗，於是拒絕啟動。這次的錯誤是 231（所有實例都在使用中）。
+- **測試發現**：一開始連第一個服務行程也建立失敗，錯誤 5。文件寫明，建立第二個以後的實例時，DACL 必須允許呼叫者 `FILE_CREATE_PIPE_INSTANCE`。以一般權限執行時 Administrators 群組不生效，而我刻意不給 Authenticated Users 這個權限。修正：DACL 加上擁有者（`OW`）的完整權限。以服務執行時擁有者是 SYSTEM，所以沒有放寬。記錄也改成分別寫出是第幾個實例失敗。
+- **審查後修正**（提權實測前）：
+  - **8.3 的前提不一定成立**：「重掃前後大小不同的檔案多半是一直開著的檔案」，只有在重掃前的索引是最新的時候才成立。但依第 5 節，重掃大多發生在索引已經過時之後，例如日誌接不上、變動太多、快取不能用，這時大小不同的多半是這段期間真的改過的檔案。追蹤的檔案每 5 秒都會重查，數量一多就會一直耗 CPU；實測 1 萬個 ID 約 0.4 秒。修正：
+    - 大小不同的檔案超過 500 個，就判斷重掃前的索引已過時，全部不加進追蹤清單；
+    - 追蹤清單整體上限 1,000 個，超過的捨棄，並寫進記錄；
+    - 追蹤的檔案不再計入「變動太多就重掃」的判斷。
+  - **重掃沒有頻率限制**：大量變動期間可能一次接一次地重掃。修正：連續重掃時，下一次至少要等 1、2、4、8 分鐘，之後固定 10 分鐘；穩定 30 分鐘後重新計算。等待期間繼續用舊索引回答，並標示「更新中」。
+  - **關機時可能來不及存檔**：原本先等正在進行的重掃結束才存檔，而且一顆磁碟停好才停下一顆。剛開機時重掃要 8～20 秒，PRESHUTDOWN 預設只有 10 秒。修正：先通知所有磁碟停止；各磁碟先存檔，再等重掃結束。
+  - **第一次建索引期間查詢回「找不到」**：改回「忙碌」，前端才不會把正常的啟動當成資料夾不存在。
+  - **拒絕的原因要分得出來**：服務自己打不開資料夾，和 `AccessCheck` 拒絕，分別寫進記錄。一般權限的冒煙測試中，被拒絕的資料夾其實是服務自己打不開，`AccessCheck` 沒有跑到；要等提權實測才看得到 `AccessCheck` 拒絕。
+  - **前端要求的 pipe 權限**：懷疑 `GENERIC_WRITE` 包含 `FILE_APPEND_DATA`，而這個位元在 pipe 上就是 `FILE_CREATE_PIPE_INSTANCE`，也就是我刻意不給 Authenticated Users 的權限。冒煙測試時前端剛好是 pipe 的擁有者，所以測不出來。新增測試：pipe 只給目前使用者 `0x0012019B`（和 Authenticated Users 相同），不給擁有者權限。**實測 `GENERIC_READ | GENERIC_WRITE` 和指定權限都能連線**，所以懷疑不成立。前端仍然只要求實際用到的權限，測試保留。
+  - 寫這個測試時，測試裡的伺服器在「前端在 `ConnectNamedPipe` 之前就關閉」時直接結束，造成後面的連線等不到實例。這是測試程式的問題；正式的伺服器遇到這種情況會先中斷連線再繼續等。
+- **已知限制**：本機程式只要每隔幾秒送一次請求，就能佔住 4 個實例，讓其他使用者暫時連不上。這只會讓服務暫時無法回應，不會耗 CPU。
+- `service-tests` 增加到 209 項。
+
+#### 主控台模式實測（2026-11-05：服務在系統管理員視窗，查詢在一般使用者視窗）
+
+- **啟動**：CPU 上限 1 個核心（`CpuRate` 500，20 個邏輯處理器）；FAT32 的隨身碟被略過；2 顆 NTFS 磁碟都有索引。
+  - C:：載入快取後補上存檔以來的 43,484 個變動，約 2 秒後就緒。
+  - D:：存檔以來的變動超過 5 萬個，所以整顆重掃。重掃花 19.2 s（平常 5～7 s），完成後存快取；有 27 個檔案前後大小不同，加進追蹤清單。依設計，重掃在背景優先順序執行，加上 CPU 上限 1 個核心，所以會比較慢。但各因素各佔多少，沒有量過。
+- **查詢**（一般使用者，透過 pipe）：
+  - `C:\` 5.7 ms；`C:\Users` 2.4 ms；`C:\Windows` 4.2 ms（82 個子資料夾的前 10 個）；`D:\` 3.2 ms。
+  - `System Volume Information`、`Config.Msi`、`PerfLogs`、一個服務帳戶的設定檔資料夾：有大小，標示「沒有權限」，符合 8.1。
+  - 使用者自己的設定檔、`Default`、`Public` 可以查詢。
+- **負面測試**：
+  - `C:\ProgramData\DirSize`：**被 `AccessCheck` 拒絕**。服務打得開這個資料夾，但用呼叫者的 token 判斷後拒絕，記錄是 `query refused by AccessCheck for the caller`。
+  - `System Volume Information`：服務自己打不開。主控台模式以系統管理員身分執行，不是 SYSTEM。
+  - UNC、`\\?\` 裝置路徑、`..`：都回「路徑不接受」。
+- **停止**（Ctrl+C）：兩顆磁碟都存了快取，在 0.3 s 內完成。
+- **發現**：D: 的記錄寫「cache loaded, 0 changes since the save」，緊接著卻因為變動太多而重掃。原因是讀日誌時，一超過 5 萬個變動就提早結束，變動數還沒填進結果。已修正：提早結束時也填入當時的數量，記錄改成「at least N changed IDs」並寫出原因。
+
+#### VM 實測：安裝成服務（2026-11-05）
+
+測試機是乾淨的 VM：4 個邏輯處理器，一顆 C:（約 49 GB、46 萬個檔案）。用 `scripts/package-test.ps1` 產生的測試包安裝，不是正式的安裝程式。
+
+| 項目 | 結果 |
+|---|---|
+| 服務設定（`sc qc`） | `AUTO_START (DELAYED)`，`LocalSystem`，執行檔在 `Program Files\DirSize` |
+| 必要權限（`sc qprivs`） | 只有 `SeChangeNotifyPrivilege` |
+| 失敗時（`sc qfailure`） | 重新計算 86400 s；`RESTART` 60000 ms 兩次 |
+| CPU 上限 | `CpuRate` 2500，4 個邏輯處理器下正好 1 個核心 |
+| 第一次啟動（沒有快取） | 整顆建索引 10.2 s，接著存快取 27 MB |
+| 重開機兩次 | 關機前都存了快取；開機後都是從快取載入，0.1～0.25 s，分別補上 2,575 和 85 個變動 |
+| 查詢（一般使用者，不加 `--console`） | 0.4～1.2 ms |
+| 資源 | CPU 累計 0.11 s，工作集 43 MB，峰值 76 MB |
+
+- **以 SYSTEM 身分、只保留 SeChangeNotifyPrivilege**，建索引和讀日誌都正常。之前「不需要 SeBackupPrivilege」是在開發機上以系統管理員身分測的，這次以真正的服務身分確認了。
+- **前端確認伺服器身分**：不加 `--console` 時，前端比對 pipe 的伺服器行程和 SCM 回報的服務 PID，一致才查詢。這次第一次在真正的服務上測到，通過。
+- **負面測試**：`C:\ProgramData\DirSize` 和 `System Volume Information` 都被 **`AccessCheck`** 拒絕。服務以 SYSTEM 執行時兩個都打得開，但會用呼叫者的 token 判斷後拒絕。UNC、裝置路徑、`..` 都回「路徑不接受」。VM 沒有 D:，所以查 `D:\` 回「找不到」。
+- 有一次在系統管理員視窗執行測試，全部得到錯誤 2（找不到 pipe）。那時是重開機後、延遲啟動之前，服務在 1 分多鐘後才啟動。第 5 階段的前端遇到這種情況，要顯示「服務啟動中」，不能當成錯誤。
+
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
 - 實測：`FSCTL_QUERY_FILE_LAYOUT` 在一般權限下無法使用（錯誤 1）；逐目錄掃描可以用，但讀不到部分資料夾。
@@ -811,6 +898,25 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 第 4 階段設計 | [GetSystemTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes) |
 | 第 4 階段設計 | [Power Setting GUIDs](https://learn.microsoft.com/en-us/windows/win32/power/power-setting-guids) |
 | 第 4 階段設計 | [RegisterPowerSettingNotification](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerpowersettingnotification) |
+| 第 4 階段實作 | [ConnectNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-connectnamedpipe) |
+| 第 4 階段實作 | [DisconnectNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-disconnectnamedpipe) |
+| 第 4 階段實作 | [CancelIoEx](https://learn.microsoft.com/en-us/windows/win32/fileio/cancelioex-func) |
+| 第 4 階段實作 | [GetOverlappedResult](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getoverlappedresult) |
+| 第 4 階段實作 | [ReadFile（訊息模式的 ERROR_MORE_DATA）](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile) |
+| 第 4 階段實作 | [Service Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/services/service-security-and-access-rights) |
+| 第 4 階段實作 | [QueryServiceStatusEx](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-queryservicestatusex) |
+| 第 4 階段實作 | [SERVICE_STATUS_PROCESS](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_status_process) |
+| 第 4 階段實作 | [OpenSCManagerW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-openscmanagerw) |
+| 第 4 階段實作 | [DeleteService](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-deleteservice) |
+| 第 4 階段實作 | [ControlService](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-controlservice) |
+| 第 4 階段實作 | [GetLogicalDrives](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getlogicaldrives) |
+| 第 4 階段實作 | [GetDriveTypeW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdrivetypew) |
+| 第 4 階段實作 | [CreateJobObjectW](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw) |
+| 第 4 階段實作 | [SetInformationJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject) |
+| 第 4 階段實作 | [SetConsoleCtrlHandler](https://learn.microsoft.com/en-us/windows/console/setconsolectrlhandler) |
+| 第 4 階段實作 | [HandlerRoutine](https://learn.microsoft.com/en-us/windows/console/handlerroutine) |
+| 第 4 階段實作 | [SERVICE_PRESHUTDOWN_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_preshutdown_info) |
+| 第 4 階段實作 | [SERVICE_DESCRIPTIONW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_descriptionw) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |

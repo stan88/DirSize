@@ -11,13 +11,17 @@
 #include <windows.h>
 #include <sddl.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "client/pipe_client.h"
+#include "core/ntfs_live.h"
 #include "service/access.h"
+#include "service/volume_worker.h"
 #include "service/protocol.h"
 
 namespace {
@@ -435,6 +439,92 @@ void TestAccessThroughPipe() {
     RemoveDirectoryW(denied.c_str());
 }
 
+// An ordinary user gets only the Authenticated Users entry of the service's
+// pipe DACL: read and write without FILE_CREATE_PIPE_INSTANCE (0x0012019B).
+// The client must be able to connect and talk with exactly that.
+void TestPipeAccessOfOrdinaryUsers() {
+    const std::wstring sid = CurrentUserSid();
+    const std::wstring sddl = L"D:P(A;;GA;;;SY)(A;;0x0012019B;;;" + sid + L")";
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    CHECK(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, nullptr));
+    SECURITY_ATTRIBUTES sa{sizeof(sa), sd, FALSE};
+    const std::wstring name = L"\\\\.\\pipe\\dirsize-test-acl-" + std::to_wstring(GetCurrentProcessId());
+    HANDLE server = CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                                     PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                                     1, 65536, 65536, 0, &sa);
+    LocalFree(sd);
+    CHECK(server != INVALID_HANDLE_VALUE);
+    if (server == INVALID_HANDLE_VALUE) return;
+    std::atomic<bool> done{false};
+    std::thread t([&] {
+        while (!done) {
+            if (!ConnectNamedPipe(server, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) {
+                DisconnectNamedPipe(server);  // e.g. the client closed before the connect: wait again
+                continue;
+            }
+            std::vector<std::byte> request(kMaxRequestBytes);
+            DWORD n = 0;
+            if (ReadFile(server, request.data(), static_cast<DWORD>(request.size()), &n, nullptr)) {
+                const auto response = EncodeStatusResponse({});
+                WriteFile(server, response.data(), static_cast<DWORD>(response.size()), &n, nullptr);
+                FlushFileBuffers(server);
+            }
+            DisconnectNamedPipe(server);
+        }
+    });
+
+    // Measured: GENERIC_READ | GENERIC_WRITE also connects with this entry
+    // (GENERIC_WRITE contains FILE_APPEND_DATA, the same bit as
+    // FILE_CREATE_PIPE_INSTANCE, so this was checked rather than assumed).
+    // The client still asks only for the specific rights it uses.
+    for (DWORD access : {static_cast<DWORD>(GENERIC_READ | GENERIC_WRITE), dirsize::client::kClientPipeAccess}) {
+        HANDLE h = INVALID_HANDLE_VALUE;
+        for (int i = 0; i < 100 && h == INVALID_HANDLE_VALUE; ++i) {
+            h = CreateFileW(name.c_str(), access, 0, nullptr, OPEN_EXISTING,
+                            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
+            if (h == INVALID_HANDLE_VALUE && GetLastError() != ERROR_PIPE_BUSY) break;
+            if (h == INVALID_HANDLE_VALUE) Sleep(10);
+        }
+        CHECK(h != INVALID_HANDLE_VALUE);
+        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    }
+
+    {
+        dirsize::client::PipeClient client;
+        dirsize::client::ClientError e;
+        CHECK(client.Connect(false, e, name.c_str()));
+        if (!e.what.empty()) std::printf("  PipeClient: %ls (error %lu)\n", e.what.c_str(), e.win32);
+        StatusResponse status;
+        ErrorResponse serverError;
+        CHECK(client.Status(status, serverError, e));
+    }
+    done = true;
+    // Unblock ConnectNamedPipe with one more connection.
+    HANDLE last = CreateFileW(name.c_str(), dirsize::client::kClientPipeAccess, 0, nullptr, OPEN_EXISTING,
+                              SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
+    if (last != INVALID_HANDLE_VALUE) CloseHandle(last);
+    t.join();
+    CloseHandle(server);
+}
+
+void TestRescanBackoffAndTrackerCap() {
+    using std::chrono::seconds;
+    CHECK(RescanBackoff(0) == seconds(0));
+    CHECK(RescanBackoff(1) == seconds(60));
+    CHECK(RescanBackoff(2) == seconds(120));
+    CHECK(RescanBackoff(3) == seconds(240));
+    CHECK(RescanBackoff(4) == seconds(480));
+    CHECK(RescanBackoff(5) == seconds(600));
+    CHECK(RescanBackoff(50) == seconds(600));
+    for (int n = 1; n < 40; ++n) CHECK(RescanBackoff(n + 1) >= RescanBackoff(n));
+
+    dirsize::OpenFileTracker tracker;
+    for (std::uint64_t id = 1; id <= 2500; ++id) tracker.Track(id);
+    CHECK(tracker.TrimTo(dirsize::kMaxTrackedOpenFiles) == 2500 - dirsize::kMaxTrackedOpenFiles);
+    CHECK(tracker.Size() == dirsize::kMaxTrackedOpenFiles);
+    CHECK(tracker.TrimTo(dirsize::kMaxTrackedOpenFiles) == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -442,6 +532,8 @@ int main() {
     TestProtocolRejects();
     TestPaths();
     TestAccessThroughPipe();
+    TestPipeAccessOfOrdinaryUsers();
+    TestRescanBackoffAndTrackerCap();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

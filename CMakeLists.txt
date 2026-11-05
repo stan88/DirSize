@@ -50,12 +50,20 @@ target_link_libraries(dirsize_core PUBLIC shell32 ole32 advapi32)
 add_library(dirsize_service STATIC
     src/service/protocol.cpp
     src/service/access.cpp
+    src/service/volume_worker.cpp
+    src/service/pipe_server.cpp
+    src/service/service_core.cpp
+    src/client/pipe_client.cpp
 )
 target_include_directories(dirsize_service PUBLIC src)
 target_link_libraries(dirsize_service PUBLIC dirsize_core)
 
 add_executable(dirsize-cli src/cli/main.cpp)
-target_link_libraries(dirsize-cli PRIVATE dirsize_core psapi)
+target_link_libraries(dirsize-cli PRIVATE dirsize_service psapi)
+
+# The Windows service (docs/DESIGN-phase4.md).
+add_executable(dirsize-service src/service/service_main.cpp)
+target_link_libraries(dirsize-service PRIVATE dirsize_service)
 
 # Phase 2 feasibility probe (measurement only, not shipped).
 add_executable(layout-probe tools/layout_probe.cpp)

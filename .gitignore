@@ -92,3 +92,6 @@ CMakeUserPresets.json
 *.log
 *.dirsize-cache
 bench-results/
+
+# Test packages (scripts/package-test.ps1)
+dist/

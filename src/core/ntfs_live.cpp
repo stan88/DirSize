@@ -287,7 +287,10 @@ CatchUpResult NtfsLiveVolume::CatchUp() {
                                                          seen_[c.id] |= c.reason;
                                                      });
         if (status != UsnParseStatus::Ok) return Rescan(r, L"malformed journal record");
-        if (collector.Size() > kMaxChangedIdsPerCatchUp) return Rescan(r, L"too many changes");
+        if (collector.Size() > kMaxChangedIdsPerCatchUp) {
+            r.changedIds = collector.Size();  // reading stopped early: at least this many
+            return Rescan(r, L"too many changes");
+        }
         if (next == read.StartUsn) break;  // no more records
         read.StartUsn = next;
     }
@@ -296,6 +299,7 @@ CatchUpResult NtfsLiveVolume::CatchUp() {
     std::vector<ChangedId> changed = collector.Take();
     r.changedIds = changed.size();
     // Files still open may have grown without new records: re-query them too.
+    r.openDropped = open_.TrimTo(kMaxTrackedOpenFiles);
     {
         std::unordered_set<std::uint64_t> have;
         for (const ChangedId& c : changed) have.insert(c.id);
@@ -305,7 +309,8 @@ CatchUpResult NtfsLiveVolume::CatchUp() {
         }
         r.openTracked = open_.Size();
     }
-    if (changed.size() > kMaxChangedIdsPerCatchUp) return Rescan(r, L"too many changes");
+    // The journal part was checked above; the tracked files are bounded by
+    // kMaxTrackedOpenFiles and never cause a rescan on their own.
     if (changed.empty()) {
         appliedUsn_ = endUsn;
         r.toUsn = endUsn;
