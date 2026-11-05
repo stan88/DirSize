@@ -37,5 +37,5 @@ cmake --build build --config Release
 
 ## Code
 
-- C++20, Win32, MSVC. Target Windows 10 or later (`_WIN32_WINNT=0x0A00`). Static CRT (`/MT`).
+- C++20, Win32, MSVC. Target Windows 10 version 1809 or later (`_WIN32_WINNT=0x0A00`; features newer than the base Windows 10 are checked at run time). Static CRT (`/MT`).
 - Parsing of raw buffers returned by Windows must be bounds-checked.

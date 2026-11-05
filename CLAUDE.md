@@ -21,7 +21,7 @@ DirSize 是**獨立實作**，以 MIT 授權開源。
 ## 技術設定
 
 - C++20、Win32，使用 MSVC（VS 2022）。
-- 目標系統 Windows 10 以上：`_WIN32_WINNT=0x0A00`。
+- 目標系統 Windows 10 1809 以上（第 3 階段決定，增量更新需要 1809 起才有的功能）。`_WIN32_WINNT=0x0A00` 不變：SDK 沒有區分 1809 的值，新功能在執行時檢查。
 - 靜態 CRT（`/MT`），使用者不需要安裝 VC++ Redistributable。
 
 ## 建置（Git Bash）

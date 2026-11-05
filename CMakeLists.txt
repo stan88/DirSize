@@ -46,6 +46,10 @@ target_link_libraries(dirsize-cli PRIVATE dirsize_core psapi)
 add_executable(layout-probe tools/layout_probe.cpp)
 target_link_libraries(layout-probe PRIVATE dirsize_core psapi)
 
+# Phase 3 feasibility probe (measurement only, not shipped).
+add_executable(usn-probe tools/usn_probe.cpp)
+target_link_libraries(usn-probe PRIVATE dirsize_core)
+
 # Unit tests (no elevation needed): ctest -C Release
 enable_testing()
 add_executable(core-tests tests/core_tests.cpp)

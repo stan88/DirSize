@@ -31,5 +31,5 @@ cmake --build build --config Release
 
 ## 程式碼
 
-- C++20、Win32、MSVC。目標系統 Windows 10 以上（`_WIN32_WINNT=0x0A00`），靜態 CRT（`/MT`）。
+- C++20、Win32、MSVC。目標系統 Windows 10 1809 以上（`_WIN32_WINNT=0x0A00`；比 Windows 10 初版新的功能在執行時檢查），靜態 CRT（`/MT`）。
 - 解析 Windows 回傳的原始緩衝區時，一定要做邊界檢查。
