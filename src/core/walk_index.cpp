@@ -19,23 +19,29 @@ void CountError(ScanIssues& issues, DWORD error) {
 // True when the folder reparse point at `path` is followed: its tag can be
 // read and is not a name surrogate (junction, symlink, mount point).
 bool ShouldFollowReparseDir(const std::wstring& path, std::uint64_t id, VolumeIndex& index) {
-    HANDLE h = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    DWORD tag = 0;
-    const bool ok = h != INVALID_HANDLE_VALUE && QueryReparseTag(h, tag);
-    if (h != INVALID_HANDLE_VALUE) {
+    auto readTag = [&](std::uint32_t& tag) {
+        HANDLE h = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return false;
+        DWORD t = 0;
+        const bool ok = QueryReparseTag(h, t);
         CloseHandle(h);
+        tag = t;
+        return ok;
+    };
+    std::uint32_t tag = 0;
+    // The walker lists the root itself, so every root child it sees is listed.
+    switch (ClassifyChildDir(false, true, true, readTag, tag)) {
+        case ChildDirVisibility::TagUnreadable:
+            ++index.issues.reparseTagFailures;
+            return false;
+        case ChildDirVisibility::NameSurrogate:
+            ++index.excluded.surrogateReparseDirs;
+            return false;
+        default:
+            CountFollowedReparseTag(index, tag, id);
+            return true;
     }
-    if (!ok) {
-        ++index.issues.reparseTagFailures;
-        return false;
-    }
-    if (IsReparseTagNameSurrogate(tag)) {
-        ++index.excluded.surrogateReparseDirs;
-        return false;
-    }
-    CountFollowedReparseTag(index, tag, id);
-    return true;
 }
 
 }  // namespace

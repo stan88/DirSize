@@ -89,6 +89,21 @@ bool QueryReparseTag(HANDLE handle, DWORD& tag) {
     return true;
 }
 
+bool ReadReparseTagById(HANDLE hint, std::uint64_t id, std::uint32_t& tagOut) {
+    FILE_ID_DESCRIPTOR descriptor{};
+    descriptor.dwSize = sizeof(descriptor);
+    descriptor.Type = FileIdType;
+    descriptor.FileId.QuadPart = static_cast<LONGLONG>(id);
+    HANDLE h = OpenFileById(hint, &descriptor, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            nullptr, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD tag = 0;
+    const bool ok = QueryReparseTag(h, tag);
+    CloseHandle(h);
+    if (ok) tagOut = tag;
+    return ok;
+}
+
 bool QueryFileId(HANDLE handle, std::uint64_t& id) {
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(handle, &info)) {

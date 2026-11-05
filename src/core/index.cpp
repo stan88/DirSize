@@ -1,5 +1,7 @@
 #include "core/index.h"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <numeric>
 
@@ -21,6 +23,23 @@ void CountFollowedReparseTag(VolumeIndex& index, std::uint32_t tag, std::uint64_
         }
     }
     index.followedReparseTags.push_back({tag, 1});
+}
+
+ChildDirVisibility ClassifyChildDir(bool parentIsRoot, bool listedInRoot, bool isReparsePoint,
+                                    const std::function<bool(std::uint32_t& tag)>& readTag, std::uint32_t& tagOut) {
+    tagOut = 0;
+    if (parentIsRoot && !listedInRoot) {
+        return ChildDirVisibility::NotInRootListing;
+    }
+    if (isReparsePoint) {
+        if (!readTag(tagOut)) {
+            return ChildDirVisibility::TagUnreadable;
+        }
+        if (IsReparseTagNameSurrogate(tagOut)) {
+            return ChildDirVisibility::NameSurrogate;
+        }
+    }
+    return ChildDirVisibility::Visible;
 }
 
 std::uint32_t AddName(VolumeIndex& index, std::wstring_view name, std::uint16_t& length) {
@@ -92,6 +111,7 @@ void RollUp(VolumeIndex& index) {
     for (DirEntry& d : dirs) {
         d.firstChild = kNoDir;
         d.nextSibling = kNoDir;
+        d.prevSibling = kNoDir;
     }
     for (DirIndex i : order) {
         if (i == index.root || depth[i] == kUnreachableDepth) {
@@ -109,6 +129,7 @@ void RollUp(VolumeIndex& index) {
         }
         DirEntry& parent = dirs[dirs[i].parent];
         dirs[i].nextSibling = parent.firstChild;
+        if (parent.firstChild != kNoDir) dirs[parent.firstChild].prevSibling = i;
         parent.firstChild = i;
     }
 }

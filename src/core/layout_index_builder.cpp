@@ -106,25 +106,27 @@ VolumeIndex LayoutIndexBuilder::Finish(std::uint64_t rootId, std::vector<std::ui
             ++index.excluded.hiddenFolders;
             continue;
         }
-        if (p == rawRoot) {
-            if (!listedInRoot(dirs_[i].id)) {
+        const bool parentIsRoot = p == rawRoot;
+        const bool listed = parentIsRoot && listedInRoot(dirs_[i].id);
+        std::uint32_t tag = 0;
+        const ChildDirVisibility v = ClassifyChildDir(
+            parentIsRoot, listed, dirs_[i].reparse,
+            [&](std::uint32_t& t) { return readReparseTag(dirs_[i].id, t); }, tag);
+        if (listed) ++index.rootListingMatched;
+        switch (v) {
+            case ChildDirVisibility::NotInRootListing:
                 ++index.excluded.hiddenFolders;  // e.g. $Extend
                 continue;
-            }
-            ++index.rootListingMatched;
-        }
-        if (dirs_[i].reparse) {
-            std::uint32_t tag = 0;
-            if (!readReparseTag(dirs_[i].id, tag)) {
+            case ChildDirVisibility::TagUnreadable:
                 ++index.issues.reparseTagFailures;
                 continue;
-            }
-            if (IsReparseTagNameSurrogate(tag)) {
+            case ChildDirVisibility::NameSurrogate:
                 ++index.excluded.surrogateReparseDirs;
                 continue;
-            }
-            CountFollowedReparseTag(index, tag, dirs_[i].id);
+            case ChildDirVisibility::Visible:
+                break;
         }
+        if (dirs_[i].reparse) CountFollowedReparseTag(index, tag, dirs_[i].id);
         visible[i] = 1;
     }
     all.clear();
@@ -189,7 +191,7 @@ VolumeIndex LayoutIndexBuilder::Finish(std::uint64_t rootId, std::vector<std::ui
             if (!visible[d]) {
                 continue;
             }
-            if (d == rawRoot && !listedInRoot(f.id)) {
+            if (!FileLinkCounted(d == rawRoot, d == rawRoot && listedInRoot(f.id))) {
                 unlistedInRoot = true;  // metafile in the root, e.g. $MFT
                 continue;
             }

@@ -36,6 +36,9 @@ add_library(dirsize_core STATIC
     src/core/layout_index_builder.cpp
     src/core/walk_index.cpp
     src/core/ntfs_index.cpp
+    src/core/live_index.cpp
+    src/core/usn_parser.cpp
+    src/core/ntfs_live.cpp
 )
 target_include_directories(dirsize_core PUBLIC src)
 
@@ -55,3 +58,6 @@ enable_testing()
 add_executable(core-tests tests/core_tests.cpp)
 target_link_libraries(core-tests PRIVATE dirsize_core)
 add_test(NAME core-tests COMMAND core-tests)
+add_executable(live-tests tests/live_index_tests.cpp)
+target_link_libraries(live-tests PRIVATE dirsize_core)
+add_test(NAME live-tests COMMAND live-tests)

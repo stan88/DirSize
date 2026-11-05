@@ -44,22 +44,6 @@ UsnStart QueryUsnStart(HANDLE volume) {
     return usn;
 }
 
-// Reads the reparse tag of a folder by ID.
-bool ReadReparseTagById(HANDLE hint, std::uint64_t id, std::uint32_t& tagOut) {
-    FILE_ID_DESCRIPTOR descriptor{};
-    descriptor.dwSize = sizeof(descriptor);
-    descriptor.Type = FileIdType;
-    descriptor.FileId.QuadPart = static_cast<LONGLONG>(id);
-    Handle h(OpenFileById(hint, &descriptor, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                          nullptr, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT));
-    DWORD tag = 0;
-    if (!h.valid() || !QueryReparseTag(h.get(), tag)) {
-        return false;
-    }
-    tagOut = tag;
-    return true;
-}
-
 }  // namespace
 
 NtfsIndexResult BuildNtfsIndex(wchar_t driveLetter) {

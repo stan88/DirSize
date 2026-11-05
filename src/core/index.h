@@ -17,6 +17,7 @@
 //   reparse points are ordinary folders.
 
 #include <cstdint>
+#include <functional>
 #include <string_view>
 #include <vector>
 
@@ -63,12 +64,18 @@ struct DirEntry {
     DirIndex parent = kNoDir;
     DirIndex firstChild = kNoDir;
     DirIndex nextSibling = kNoDir;
-    std::uint32_t nameOffset = 0;  // into VolumeIndex::names
-    std::uint16_t nameLength = 0;  // in UTF-16 code units
-    std::uint16_t flags = 0;       // reserved
-    Totals subtree;                // everything below this folder
+    DirIndex prevSibling = kNoDir;  // makes unlinking a child O(1)
+    std::uint32_t nameOffset = 0;   // into VolumeIndex::names
+    std::uint16_t nameLength = 0;   // in UTF-16 code units
+    std::uint16_t flags = 0;        // kEntryDead, see below
+    Totals subtree;                 // everything below this folder
 };
 static_assert(sizeof(DirEntry) == 64);
+
+// FileEntry::flags / DirEntry::flags: the entry is no longer counted (deleted,
+// or below a folder that stopped being visible). Used by incremental updates;
+// a freshly built index has no dead entries.
+constexpr std::uint16_t kEntryDead = 0x0001;
 
 // What was left out by the counting rules. Informational only.
 struct ExcludedTotals {
@@ -141,6 +148,26 @@ struct VolumeIndex {
     // Bytes held by the tables (capacity, not size).
     std::uint64_t MemoryBytes() const;
 };
+
+// ---- counting rules, shared by full builds and incremental updates ----------
+
+enum class ChildDirVisibility {
+    Visible,
+    NotInRootListing,  // root child the root listing does not show ($Extend, ...)
+    NameSurrogate,     // junction, symbolic link, mount point: not followed
+    TagUnreadable,     // reparse tag could not be read: not followed
+};
+
+// Whether a folder whose parent is visible is itself visible.
+// `readTag` is called only for reparse points.
+ChildDirVisibility ClassifyChildDir(bool parentIsRoot, bool listedInRoot, bool isReparsePoint,
+                                    const std::function<bool(std::uint32_t& tag)>& readTag, std::uint32_t& tagOut);
+
+// Whether one link of a file, in a visible folder, is counted: links in the
+// root count only when the root listing shows the file.
+inline bool FileLinkCounted(bool parentIsRoot, bool listedInRoot) {
+    return !parentIsRoot || listedInRoot;
+}
 
 // Counts one followed folder reparse point under its tag and keeps its ID
 // as a diagnostic sample.

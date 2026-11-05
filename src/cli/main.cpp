@@ -23,6 +23,7 @@
 #include "core/dir_walker.h"
 #include "core/index.h"
 #include "core/ntfs_index.h"
+#include "core/ntfs_live.h"
 #include "core/path_util.h"
 #include "core/walk_index.h"
 
@@ -164,6 +165,7 @@ void PrintUsage() {
     WriteLine(L"Usage:");
     WriteLine(L"  dirsize-cli scan <path> [--top N] [--json]");
     WriteLine(L"  dirsize-cli verify <drive letter>      (NTFS, elevated)");
+    WriteLine(L"  dirsize-cli watch <drive letter> [seconds]  (NTFS, elevated; default 300)");
     WriteLine();
     WriteLine(L"Walks the folder tree under <path> and reports total size, file and");
     WriteLine(L"folder counts, elapsed time and peak memory use.");
@@ -172,6 +174,9 @@ void PrintUsage() {
     WriteLine();
     WriteLine(L"verify builds the folder index of a whole NTFS volume with both engines");
     WriteLine(L"and compares them folder by folder.");
+    WriteLine();
+    WriteLine(L"watch builds the index, keeps it current with the USN journal for the");
+    WriteLine(L"given time, then compares it with a fresh full build folder by folder.");
 }
 
 void PrintText(const std::wstring& displayPath, const WalkResult& r, const RunInfo& info,
@@ -634,6 +639,96 @@ int RunVerify(const wchar_t* driveArg) {
     return 0;
 }
 
+void PrintCatchUp(const wchar_t* what, const dirsize::CatchUpResult& r) {
+    WriteLine(Format(L"  %s: USN %lld -> %lld, %llu records, %llu changed IDs, %llu open files, %llu ranges, "
+                     L"%llu entries, %llu calls; read %.3f s, query %.3f s, apply %.3f s",
+                     what, r.fromUsn, r.toUsn, r.records, r.changedIds, r.openTracked, r.ranges, r.entries,
+                     r.layoutCalls,
+                     r.readSeconds, r.querySeconds, r.applySeconds));
+    const auto& u = r.update;
+    if (r.changedIds != 0) {
+        WriteLine(Format(L"    files changed %llu, folders created %llu, moved %llu, removed %llu", u.filesChanged,
+                         u.foldersCreated, u.foldersMoved, u.foldersRemoved));
+    }
+    if (r.needsRescan) WriteLine(Format(L"    NEEDS RESCAN: %s (Win32 error %lu)", r.reason, r.error));
+}
+
+int RunWatch(const wchar_t* driveArg, unsigned seconds) {
+    if (!iswalpha(driveArg[0]) || (driveArg[1] != L'\0' && driveArg[1] != L':')) {
+        PrintUsage();
+        return 2;
+    }
+    const wchar_t drive = static_cast<wchar_t>(towupper(driveArg[0]));
+    const std::wstring rootPath = std::wstring(1, drive) + L":\\";
+    WriteLine(Format(L"Volume            %c:", drive));
+    WriteLine(Format(L"Elevated          %s", IsElevated() ? L"yes" : L"no"));
+    WriteLine(Format(L"Backup privilege  %s", EnableBackupPrivilege() ? L"enabled" : L"not available"));
+    WriteLine(Format(L"Watch time        %u s", seconds));
+
+    WriteLine();
+    WriteLine(L"== Build");
+    dirsize::NtfsIndexResult build;
+    std::unique_ptr<dirsize::NtfsLiveVolume> volume = dirsize::NtfsLiveVolume::Build(drive, build);
+    if (!volume) {
+        WriteLine(Format(L"  failed: %s (Win32 error %lu)", build.failedStep, build.error));
+        return 1;
+    }
+    WriteLine(Format(L"  enumerate %.3f s, build %.3f s; journal 0x%016llx, start USN %lld", build.enumerateSeconds,
+                     build.finishSeconds, volume->JournalId(), volume->AppliedUsn()));
+    dirsize::CatchUpResult r = volume->CatchUp();
+    PrintCatchUp(L"replay of changes during the scan", r);
+    if (r.needsRescan) return 1;
+
+    WriteLine();
+    WriteLine(L"== Watch (catch-up every 5 s; lines only when something changed)");
+    const auto start = std::chrono::steady_clock::now();
+    std::uint64_t rounds = 0, totalIds = 0, maxOpen = 0;
+    double worstSeconds = 0;
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() < seconds) {
+        Sleep(5000);
+        r = volume->CatchUp();
+        ++rounds;
+        totalIds += r.changedIds;
+        worstSeconds = std::max(worstSeconds, r.readSeconds + r.querySeconds + r.applySeconds);
+        if (r.records != 0 || r.needsRescan) PrintCatchUp(L"catch-up", r);
+        maxOpen = std::max<std::uint64_t>(maxOpen, r.openTracked);
+        if (r.needsRescan) return 1;
+    }
+    WriteLine(Format(L"  %llu catch-ups, %llu changed IDs in total, at most %llu open files tracked, slowest %.3f s",
+                     rounds, totalIds, maxOpen, worstSeconds));
+
+    WriteLine();
+    WriteLine(L"== Compare with a fresh full build");
+    dirsize::NtfsIndexResult fresh = dirsize::BuildNtfsIndex(drive);
+    if (!fresh.ok) {
+        WriteLine(Format(L"  failed: %s (Win32 error %lu)", fresh.failedStep, fresh.error));
+        return 1;
+    }
+    r = volume->CatchUp();  // include what changed during the fresh build
+    PrintCatchUp(L"last catch-up", r);
+    if (r.needsRescan) return 1;
+    const VolumeIndex live = volume->Live().Compacted();
+    std::uint64_t mismatched = 0;
+    for (const auto& d : live.dirs) {
+        const DirIndex i = volume->Live().FindDir(d.id);
+        if (!volume->Live().DirLive(i) || !(volume->Live().Index().dirs[i].subtree == d.subtree)) ++mismatched;
+    }
+    WriteLine(Format(L"  Maintained totals vs recomputed: %llu folders differ (should be 0)", mismatched));
+    WriteLine(L"  In the lines below, \"layout\" is the updated index and \"walk\" the fresh full build.");
+    const Totals& lt = live.dirs[live.root].subtree;
+    const Totals& ft = fresh.index.dirs[fresh.index.root].subtree;
+    WriteLine(Format(L"  Whole volume: files %+lld, folders %+lld, bytes %+lld, on disk %+lld", Diff(lt.files, ft.files),
+                     Diff(lt.folders, ft.folders), Diff(lt.logicalBytes, ft.logicalBytes),
+                     Diff(lt.allocatedBytes, ft.allocatedBytes)));
+    Comparer comparer{live, fresh.index, rootPath};
+    comparer.Compare(live.root, fresh.index.root, 0);
+    WriteLine(Format(L"  Differing folders %llu, only in updated %llu, only in fresh %llu", comparer.differingFolders,
+                     comparer.onlyInLayout, comparer.onlyInWalk));
+    WriteLine();
+    WriteLine(Format(L"Result: %s", comparer.Differs(lt, ft) ? L"DIFFERENT (see above)" : L"IDENTICAL totals"));
+    return 0;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -641,6 +736,10 @@ int wmain(int argc, wchar_t** argv) {
 
     if (argc == 3 && std::wstring_view(argv[1]) == L"verify") {
         return RunVerify(argv[2]);
+    }
+    if ((argc == 3 || argc == 4) && std::wstring_view(argv[1]) == L"watch") {
+        const unsigned seconds = argc == 4 ? static_cast<unsigned>(std::wcstoul(argv[3], nullptr, 10)) : 300u;
+        return RunWatch(argv[2], seconds);
     }
     if (argc < 3 || std::wstring_view(argv[1]) != L"scan") {
         PrintUsage();

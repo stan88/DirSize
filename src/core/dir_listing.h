@@ -41,6 +41,10 @@ HANDLE OpenDirectoryForListing(const wchar_t* path);
 // Reparse tag of an open handle (FileAttributeTagInfo). Returns false on error.
 bool QueryReparseTag(HANDLE handle, DWORD& tag);
 
+// Reparse tag of a file or folder by ID (OpenFileById with `hint`, a handle
+// on the same volume). Returns false when it cannot be opened or read.
+bool ReadReparseTagById(HANDLE hint, std::uint64_t id, std::uint32_t& tag);
+
 // The 64-bit file ID of an open handle (GetFileInformationByHandle).
 bool QueryFileId(HANDLE handle, std::uint64_t& id);
 
