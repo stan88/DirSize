@@ -32,6 +32,7 @@ BEGIN
     IDS_ERR_FAILED          "無法讀取，錯誤碼 "
     IDS_TOTAL               "合計 "
     IDS_FILES_SUFFIX        " 個檔案"
-    IDS_HINT                "Enter 進入　Backspace 上一層　Ctrl+O 選擇資料夾　F5 重新整理"
+    IDS_HINT                "Enter 進入　Backspace 上一層　Tab 切換樹狀／清單　Ctrl+O 選擇資料夾　F5 重新整理"
     IDS_PICK_FOLDER         "選擇資料夾"
+    IDS_DRIVE_LABEL         "%1 (%2)"
 END

@@ -65,6 +65,8 @@ add_library(dirsize_ui_core STATIC
     src/ui/palette.cpp
     src/ui/placement.cpp
     src/ui/panel_rules.cpp
+    src/ui/tree_model.cpp
+    src/ui/scroll_geometry.cpp
 )
 target_include_directories(dirsize_ui_core PUBLIC src)
 
@@ -73,6 +75,9 @@ add_library(dirsize_ui STATIC
     src/ui/strings.cpp
     src/ui/theme.cpp
     src/ui/size_list.cpp
+    src/ui/scroll_strip.cpp
+    src/ui/tree_loader.cpp
+    src/ui/folder_tree.cpp
     src/ui/folder_source.cpp
     src/ui/explorer_tracker.cpp
 )

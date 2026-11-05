@@ -31,7 +31,10 @@ public:
     // Posts `message` to `panel` with lParam = ExplorerUpdate* (the receiver
     // deletes it) whenever the followed window or the folder changes. While
     // `panel` itself is in front, nothing changes.
-    ExplorerTracker(HWND panel, UINT message);
+    // `tracePath` non-empty: append a line to that file whenever what the
+    // tracker sees changes (view, folder, selection, rule decisions), for
+    // diagnosing the panel rules on a real Explorer (dirsize --panel --trace).
+    ExplorerTracker(HWND panel, UINT message, const std::wstring& tracePath = L"");
     // Stops the thread; waits at most 2 s (a call into a hung Explorer must
     // not hang DirSize), then leaves the thread to end on its own.
     ~ExplorerTracker();

@@ -25,6 +25,10 @@ enum class Column { Name, Size, Allocated, Share, Files };
 // "file2" comes before "file10" as in Explorer.
 void SortItems(std::vector<ListItem>& items, Column column, bool descending);
 
+// Name order of the list and the folder tree: the user's locale with digits
+// compared as numbers, ignoring case. Negative, zero or positive.
+int CompareNames(const std::wstring& a, const std::wstring& b);
+
 // The default order of a column the first time it is clicked: names
 // ascending, numbers descending (largest first).
 bool DefaultDescending(Column column);

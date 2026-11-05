@@ -1,8 +1,10 @@
-// DirSize front end (Phase 5). This first version is the standalone window:
-// a folder's subfolders and files with their sizes, following the system
-// theme. The Explorer panel comes next (docs/DESIGN-phase5.md section 8).
+// DirSize front end (Phase 5): the standalone window (a folder tree on the
+// left, the selected folder's subfolders and files with their sizes on the
+// right, following the system theme) and, with --panel, the Explorer panel
+// (panel.cpp). docs/DESIGN-phase5.md sections 3 and 4.
 //
 //   dirsize.exe [folder]
+//   dirsize.exe --panel
 
 #include <windows.h>
 #include <unknwn.h>
@@ -17,6 +19,7 @@
 
 #include "app/panel.h"
 #include "ui/folder_source.h"
+#include "ui/folder_tree.h"
 #include "ui/format.h"
 #include "ui/size_list.h"
 #include "ui/strings.h"
@@ -33,6 +36,9 @@ constexpr UINT kFolderLoaded = WM_APP + 2;
 constexpr WORD kCmdRefresh = 1;
 constexpr WORD kCmdPick = 2;
 constexpr WORD kCmdUp = 3;
+constexpr WORD kCmdNextPane = 4;  // Tab, Shift+Tab
+constexpr int kTreeWidthDip = 260;
+constexpr int kSplitterDip = 6;
 
 std::wstring ParentOf(const std::wstring& path) {
     if (path.size() <= 3) return path;  // "C:\" stays
@@ -80,7 +86,11 @@ private:
     void UpdateFonts();
     void Layout();
     void PaintHeader(HDC dc, const RECT& client);
-    void Navigate(const std::wstring& path, bool refresh);
+    void Navigate(const std::wstring& path, bool refresh, bool fromTree = false);
+    void OnTreeSelect();
+    void NextPane();
+    RECT SplitterRect() const;
+    void SetTreeWidth(int x);
     void OnLoaded(std::unique_ptr<FolderResult> r);
     void PickFolder();
     int Scale(int dip) const { return MulDiv(dip, static_cast<int>(dpi_), 96); }
@@ -89,6 +99,10 @@ private:
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
     SizeList* list_ = nullptr;
+    FolderTree* tree_ = nullptr;
+    HWND lastFocus_ = nullptr;  // the pane that gets the focus back on activation
+    int treeWidthDip_ = kTreeWidthDip;
+    bool dragging_ = false;     // moving the splitter
     ThemeWatcher theme_;
     Palette palette_;
     std::unique_ptr<FolderSource> source_;
@@ -144,6 +158,8 @@ LRESULT CALLBACK MainWindow::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 void MainWindow::OnCreate() {
     dpi_ = GetDpiForWindow(hwnd_);
     UpdateFonts();
+    tree_ = FolderTree::Create(hwnd_, instance_);
+    if (tree_) tree_->SetDpi(dpi_);
     list_ = SizeList::Create(hwnd_, instance_);
     if (list_) list_->SetDpi(dpi_);
     source_ = std::make_unique<FolderSource>(hwnd_, kFolderLoaded);
@@ -156,6 +172,7 @@ void MainWindow::ApplyTheme() {
     palette_ = theme_.Current();
     ThemeWatcher::ApplyTitleBar(hwnd_, palette_.dark && !palette_.highContrast);
     if (list_) list_->SetPalette(palette_);
+    if (tree_) tree_->SetPalette(palette_);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -171,11 +188,30 @@ void MainWindow::UpdateFonts() {
     titleFont_ = CreateFontIndirectW(&title);
 }
 
+RECT MainWindow::SplitterRect() const {
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    // The tree keeps at least 120 DIPs, the list at least 240 when possible.
+    int width = std::min(Scale(treeWidthDip_), static_cast<int>(rc.right) - Scale(240 + kSplitterDip));
+    width = std::max(width, Scale(120));
+    return RECT{width, HeaderHeight(), width + Scale(kSplitterDip), rc.bottom};
+}
+
+void MainWindow::SetTreeWidth(int x) {
+    treeWidthDip_ = std::max(120, MulDiv(x, 96, static_cast<int>(dpi_)));
+    Layout();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void MainWindow::Layout() {
     RECT rc;
     GetClientRect(hwnd_, &rc);
+    const RECT split = SplitterRect();
+    const int height = std::max(0, static_cast<int>(rc.bottom) - HeaderHeight());
+    if (tree_) MoveWindow(tree_->Window(), 0, HeaderHeight(), split.left, height, TRUE);
     if (list_) {
-        MoveWindow(list_->Window(), 0, HeaderHeight(), rc.right, std::max(0L, rc.bottom - HeaderHeight()), TRUE);
+        MoveWindow(list_->Window(), split.right, HeaderHeight(), std::max(0, static_cast<int>(rc.right - split.right)),
+                   height, TRUE);
     }
 }
 
@@ -202,10 +238,25 @@ void MainWindow::PaintHeader(HDC dc, const RECT& client) {
     }
     DrawTextW(dc, status_.c_str(), -1, &line2, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(dc, old);
+
+    // The splitter: background with a one-pixel line in the middle.
+    RECT split = SplitterRect();
+    SetDCBrushColor(dc, palette_.background);
+    FillRect(dc, &split, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    const int mid = (split.left + split.right) / 2;
+    RECT line{mid, split.top, mid + std::max(1, Scale(1)), split.bottom};
+    SetDCBrushColor(dc, palette_.line);
+    FillRect(dc, &line, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
 }
 
-void MainWindow::Navigate(const std::wstring& path, bool refresh) {
+void MainWindow::Navigate(const std::wstring& path, bool refresh, bool fromTree) {
     path_ = Normalize(path);
+    // The tree follows the list; a selection made in the tree is already
+    // there. Reveal never reports back, so this does not loop.
+    if (tree_ && !fromTree) {
+        if (refresh) tree_->Refresh(path_);
+        tree_->Reveal(path_);
+    }
     SetWindowTextW(hwnd_, (path_ + L" - " + Text(IDS_APP_TITLE)).c_str());
     status_ = Text(IDS_LOADING);
     if (list_ && !refresh) {
@@ -249,6 +300,22 @@ void MainWindow::OnLoaded(std::unique_ptr<FolderResult> r) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::OnTreeSelect() {
+    if (!tree_) return;
+    std::wstring path = tree_->SelectedPath();
+    if (path.empty()) return;
+    path = Normalize(path);
+    if (CompareStringOrdinal(path.c_str(), -1, path_.c_str(), -1, TRUE) == CSTR_EQUAL) return;
+    Navigate(path, false, true);
+}
+
+void MainWindow::NextPane() {
+    if (!tree_ || !list_) return;
+    HWND next = GetFocus() == tree_->Window() ? list_->Window() : tree_->Window();
+    SetFocus(next);
+    lastFocus_ = next;
+}
+
 void MainWindow::PickFolder() {
     ComPtr<IFileOpenDialog> dialog;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
@@ -289,17 +356,58 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             EndPaint(hwnd_, &ps);
             return 0;
         }
+        case WM_SETCURSOR: {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd_, &pt);
+            RECT split = SplitterRect();
+            if (LOWORD(lp) == HTCLIENT && PtInRect(&split, pt)) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+                return TRUE;
+            }
+            break;
+        }
+        case WM_LBUTTONDOWN: {
+            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            RECT split = SplitterRect();
+            if (PtInRect(&split, pt)) {
+                dragging_ = true;
+                SetCapture(hwnd_);
+            }
+            return 0;
+        }
+        case WM_MOUSEMOVE:
+            if (dragging_) SetTreeWidth(GET_X_LPARAM(lp) - Scale(kSplitterDip) / 2);
+            return 0;
+        case WM_CAPTURECHANGED:
+            dragging_ = false;
+            return 0;
         case WM_LBUTTONUP:
+            if (dragging_) {
+                ReleaseCapture();  // WM_CAPTURECHANGED clears dragging_
+                return 0;
+            }
             if (GET_Y_LPARAM(lp) < Scale(32)) PickFolder();  // click on the path
             return 0;
+        case WM_ACTIVATE:
+            if (LOWORD(wp) == WA_INACTIVE) {
+                HWND focus = GetFocus();
+                if ((tree_ && focus == tree_->Window()) || (list_ && focus == list_->Window())) lastFocus_ = focus;
+            }
+            break;
         case WM_SETFOCUS:
-            if (list_) SetFocus(list_->Window());
+            if (lastFocus_ && IsWindow(lastFocus_)) SetFocus(lastFocus_);
+            else if (list_) SetFocus(list_->Window());
+            return 0;
+        case kTreeSelect:
+            OnTreeSelect();
             return 0;
         case WM_COMMAND:
             switch (LOWORD(wp)) {
                 case kCmdRefresh: Navigate(path_, true); return 0;
                 case kCmdPick: PickFolder(); return 0;
                 case kCmdUp: Navigate(ParentOf(path_), false); return 0;
+                case kCmdNextPane: NextPane(); return 0;
             }
             break;
         case kListGoUp:
@@ -329,6 +437,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                          suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
             UpdateFonts();
             if (list_) list_->SetDpi(dpi_);
+            if (tree_) tree_->SetDpi(dpi_);
             Layout();
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
@@ -373,6 +482,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         {FVIRTKEY, VK_F5, kCmdRefresh},
         {FVIRTKEY | FCONTROL, 'O', kCmdPick},
         {FVIRTKEY | FALT, VK_UP, kCmdUp},
+        {FVIRTKEY, VK_TAB, kCmdNextPane},
+        {FVIRTKEY | FSHIFT, VK_TAB, kCmdNextPane},
     };
     HACCEL accel = CreateAcceleratorTableW(keys, static_cast<int>(std::size(keys)));
     MSG msg;

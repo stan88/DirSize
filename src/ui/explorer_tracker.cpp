@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <share.h>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -22,6 +24,7 @@ namespace dirsize::ui {
 struct ExplorerTracker::State {
     HWND panel = nullptr;
     UINT message = 0;
+    std::wstring tracePath;
     std::atomic<bool> stop{false};
     std::atomic<DWORD> threadId{0};
     HANDLE done = nullptr;
@@ -163,9 +166,71 @@ int FrontmostTab(const std::vector<HWND>& browsers) {
     return -1;
 }
 
+// Diagnostics (dirsize --panel --trace): one line per change, with the time
+// since the tracker started. Repeated identical lines are skipped per kind.
+class TraceLog {
+public:
+    explicit TraceLog(const std::wstring& path) {
+        // Shared, so the file can be read while the panel runs.
+        if (!path.empty()) file_ = _wfsopen(path.c_str(), L"a, ccs=UTF-8", _SH_DENYNO);
+        start_ = GetTickCount64();
+        Line(L"start", L"---- panel trace ----");
+    }
+    ~TraceLog() {
+        if (file_) fclose(file_);
+    }
+    bool On() const { return file_ != nullptr; }
+    // `kind` groups lines: a line equal to the last one of its kind is not written.
+    void Line(const std::wstring& kind, const std::wstring& text) {
+        if (!file_) return;
+        for (auto& [k, last] : last_) {
+            if (k == kind) {
+                if (last == text) return;
+                last = text;
+                Write(kind, text);
+                return;
+            }
+        }
+        last_.push_back({kind, text});
+        Write(kind, text);
+    }
+
+private:
+    void Write(const std::wstring& kind, const std::wstring& text) {
+        fwprintf(file_, L"%8llu ms  %-10ls %ls\n", GetTickCount64() - start_, kind.c_str(), text.c_str());
+        fflush(file_);
+    }
+    FILE* file_ = nullptr;
+    ULONGLONG start_ = 0;
+    std::vector<std::pair<std::wstring, std::wstring>> last_;
+};
+
+std::wstring Hex(const void* p) {
+    wchar_t b[32];
+    swprintf_s(b, L"%p", p);
+    return b;
+}
+
+std::wstring Hex32(HRESULT hr) {
+    wchar_t b[16];
+    swprintf_s(b, L"0x%08X", static_cast<unsigned>(hr));
+    return b;
+}
+
+// Class of the window with the keyboard focus in `top`'s thread (which
+// Explorer pane the user is in: tree, view, address bar).
+std::wstring FocusClass(HWND top) {
+    GUITHREADINFO gti{sizeof(gti)};
+    DWORD tid = GetWindowThreadProcessId(top, nullptr);
+    if (!tid || !GetGUIThreadInfo(tid, &gti) || !gti.hwndFocus) return L"-";
+    wchar_t name[64] = {};
+    GetClassNameW(gti.hwndFocus, name, 64);
+    return name;
+}
+
 class Tracker {
 public:
-    explicit Tracker(std::shared_ptr<ExplorerTracker::State> s) : s_(std::move(s)) {}
+    explicit Tracker(std::shared_ptr<ExplorerTracker::State> s) : s_(std::move(s)), trace_(s_->tracePath) {}
 
     void Tick() {
         HWND fg = Root(GetForegroundWindow());
@@ -176,7 +241,13 @@ public:
             Forget();
             rules_.ViewLost();
             targetChanged = true;
+            trace_.Line(L"target", Hex(fg) + L" (view lost)");
         }
+        // Measured (--trace, Windows 11): the navigation pane is a
+        // SysTreeView32 (the documented TreeView class) in Explorer's thread.
+        const std::wstring focus = FocusClass(target_);
+        inNavPane_ = focus == L"SysTreeView32";
+        trace_.Line(L"focus", focus);
         if (!windows_ && FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&windows_)))) {
             windows_.Reset();
             return;
@@ -192,13 +263,19 @@ public:
             FullCheck();
         } else {
             Selection sel = ReadSelection(active_.shellView.Get());
+            trace_.Line(L"selection", sel.ok ? L"count=" + std::to_wstring(sel.count) + L" path=" + sel.path
+                                             : L"read failed hr=" + Hex32(sel.hr));
             if (sel.ok) {
-                rules_.Selection(sel.count, sel.path, sel.count == 1 && IsFileSystemFolder(sel.path));
+                rules_.Selection(sel.count, sel.path, sel.count == 1 && IsFileSystemFolder(sel.path), inNavPane_);
             } else if (IsDisconnected(sel.hr)) {
+                trace_.Line(L"viewlost", L"disconnected");
                 Reset();
             }
         }
-        if (rules_.TakeChanged() || targetChanged) Post();
+        if (rules_.TakeChanged() || targetChanged) {
+            trace_.Line(L"shown", rules_.Shown().empty() ? L"(hidden)" : rules_.Shown());
+            Post();
+        }
     }
 
     void Navigate(const std::wstring& folder) {
@@ -218,6 +295,7 @@ private:
         std::vector<ViewInfo> views;
         HRESULT hr = ReadViews(windows_.Get(), target_, views);
         if (FAILED(hr)) {
+            trace_.Line(L"viewlost", L"ReadViews failed hr=" + Hex32(hr));
             Reset();  // Explorer restarted: create IShellWindows again next tick
             return;
         }
@@ -230,7 +308,11 @@ private:
             int front = FrontmostTab(browsers);
             if (front >= 0) active = &views[front];
         }
+        trace_.Line(L"full", L"views=" + std::to_wstring(views.size()) +
+                                 (active ? L" active view=" + Hex(active->view) + L" folder=" + active->folder
+                                         : std::wstring(L" no active view")));
         if (!active) {
+            trace_.Line(L"viewlost", L"no active view");
             Forget();
             rules_.ViewLost();
             return;
@@ -239,8 +321,12 @@ private:
         if (active->view != active_.view || active->folder != active_.folder) {
             active_ = *active;
             Selection sel = ReadSelection(active_.shellView.Get());
+            trace_.Line(L"navigated", L"folder=" + active_.folder +
+                                          L" fs=" + (IsFileSystemFolder(active_.folder) ? L"1" : L"0") +
+                                          L" baseline=" +
+                                          (sel.ok ? SelectionKey(sel.count, sel.path, inNavPane_) : L"? hr=" + Hex32(sel.hr)));
             rules_.Navigated(active_.folder, IsFileSystemFolder(active_.folder),
-                             sel.ok ? SelectionKey(sel.count, sel.path) : std::wstring(L"?"));
+                             sel.ok ? SelectionKey(sel.count, sel.path, inNavPane_) : std::wstring(L"?"));
         }
     }
 
@@ -261,12 +347,14 @@ private:
     }
 
     std::shared_ptr<ExplorerTracker::State> s_;
+    TraceLog trace_;
     ComPtr<IShellWindows> windows_;
     HWND target_ = nullptr;
     ViewInfo active_;
     std::vector<HWND> tabs_;
     PanelRules rules_;
     unsigned ticks_ = 0;
+    bool inNavPane_ = false;  // keyboard focus in Explorer's tree (this tick)
 };
 
 void Worker(std::shared_ptr<ExplorerTracker::State> s) {
@@ -297,9 +385,11 @@ void Worker(std::shared_ptr<ExplorerTracker::State> s) {
 
 }  // namespace
 
-ExplorerTracker::ExplorerTracker(HWND panel, UINT message) : state_(std::make_shared<State>()) {
+ExplorerTracker::ExplorerTracker(HWND panel, UINT message, const std::wstring& tracePath)
+    : state_(std::make_shared<State>()) {
     state_->panel = panel;
     state_->message = message;
+    state_->tracePath = tracePath;
     state_->done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     std::thread(Worker, state_).detach();
 }

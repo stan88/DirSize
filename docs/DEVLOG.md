@@ -864,6 +864,73 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
     - 位置的純函式加了高度參數和「哪一邊調寬度」的規則，ui-tests 81 項通過。
 - **使用者在開發機（Windows 11）實測面板**：圓角與外框、雙擊導航、調整大小、面板跟著檔案總管，都正常。
 
+### 2026-11-06 第 5 階段：獨立視窗的資料夾樹
+
+- 前一步已 commit（5cb05f7）並 push。
+- **原則：樹的子資料夾 = 清單的資料夾**。清單會叫樹「顯示到這個路徑」（Reveal），如果樹濾掉了清單有的資料夾，就會對不上。所以樹列子資料夾時，用的是服務索引的規則（`core/index.h`）：
+  - 略過 `IsReparseTagNameSurrogate` 為真的資料夾 reparse point，也就是 junction、符號連結、掛載點；
+  - 其他種類的 reparse point，以及隱藏、系統資料夾，都列出。
+  - 標記從 `WIN32_FIND_DATAW::dwReserved0` 讀。文件寫明：有 `FILE_ATTRIBUTE_REPARSE_POINT` 時，這個欄位就是 reparse 標記。
+  - **已知的不一致**（之前就存在，這次沒有改）：逐目錄掃描（`WalkTree`）略過**所有**資料夾 reparse point，所以服務不能用時，清單可能少幾個資料夾，例如雲端檔案資料夾。樹列的會比清單多，但不會少，所以 Reveal 不受影響。
+- **純邏輯 `TreeModel`**（`dirsize_ui_core`，由 ui-tests 測試）：
+  - 根節點是磁碟機；展開時才列子資料夾；同一個資料夾再列一次時，還在的子節點和它們的展開狀態都保留。
+  - 名稱排序沿用清單的 `CompareNames`（`CompareStringEx` 加 `SORT_DIGITSASNUMBERS`）；比對名稱不分大小寫（`CompareStringOrdinal`）。
+  - Reveal 會展開祖先；還沒列過的祖先，先列出來，等結果回來再繼續。
+    - 中間某一層找不到，或列不出來，就停在找得到的最深一層；
+    - 網路共用這類不在磁碟機下的路徑，清掉選取；
+    - 磁碟機還沒出現在清單裡時就先等，`SetRoots` 帶來那個磁碟機後再繼續。
+  - **只有使用者操作才回報「選取改變」**，Reveal 和列出結果都不回報。所以清單 → 樹 → 清單不會互相觸發。使用者一操作，進行中的 Reveal 就結束，晚到的列出結果不會把選取搶走。
+- **背景列出 `TreeLoader`**（工作執行緒，生命週期的寫法同 `FolderSource`）：
+  - 列資料夾用 `FindFirstFileExW`，加 `FindExInfoBasic`、`FIND_FIRST_EX_LARGE_FETCH`、`FindExSearchLimitToDirectories`。文件說最後這個旗標只是建議，所以每一筆都還是檢查屬性。
+  - 要列的路徑排成佇列，同一個路徑不重複排。
+  - 磁碟機分兩次送：先送 `GetLogicalDriveStringsW` 的磁碟機代號，再用 `GetVolumeInformationW` 補上標籤。網路磁碟機不查標籤，所以斷線的共用不會卡住列出。
+  - 執行緒設 `SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX)`，空的讀卡機或光碟機只會回傳錯誤，不會跳出系統對話框。
+  - **沒有文件依據的假設**：`FindFirstFileExW` 的文件沒有說「找不到符合的項目」時是哪個錯誤碼。磁碟機根目錄沒有 `.` 這一筆，所以空的根目錄可能什麼都找不到。程式把 `ERROR_FILE_NOT_FOUND` 當成「沒有子資料夾」，其他錯誤當成列不出來。
+- **自己繪製的樹 `FolderTree`**：
+  - 跟 SizeList 一樣，用主題的顏色自己畫；展開符號和資料夾、磁碟機圖示都用線條畫，不用圖片，高對比也看得清楚；
+  - 點一下就切換清單；用鍵盤移動時，停 250 ms 才切換，按住方向鍵不會一路載入每個資料夾。按 Enter 立刻切換；
+  - 方向鍵左右照檔案總管的習慣：右鍵展開或進到第一個子資料夾，左鍵收合或回到上一層；收合時如果選取在裡面，選取就移到收合的那個資料夾；
+  - 有焦點時，選取列加一圈外框，用 Tab 切換時看得出鍵盤現在在哪一邊；
+  - Reveal 的目標不在畫面內時，捲到中間。
+- **獨立視窗**：
+  - 左邊樹、右邊清單，中間的分隔線可以拖（`WM_SETCURSOR`、`SetCapture`、`WM_CAPTURECHANGED`）。寬度以 DIP 記，樹至少 120 DIP，清單至少留 240 DIP；
+  - Tab、Shift+Tab 在樹和清單之間切換，視窗重新啟用時，焦點回到原本那一邊；
+  - F5 會重新列磁碟機和目前的資料夾；
+  - 新增字串 `IDS_DRIVE_LABEL`（"%1 (%2)"），提示列加上 Tab。
+- **測試**：
+  - ui-tests 175 → 177 項，全部通過；core 448 項、service 209 項也都通過；
+  - **突變檢查**，12 種全部抓到。其中「Reveal 不展開已經列過的祖先」一開始沒抓到，補了「祖先已經列過但收合著」的測試才抓到。另一種會讓測試程式當掉，已經改成正常回報失敗；
+  - 開發機截圖（深色，沒有安裝服務），用 `C:\Windows\System32\drivers` 啟動：樹自動展開 C:\ → Windows → System32，選取 drivers 並捲到中間；清單內容正確；工作集 15 MB，4 個執行緒，正常關閉。
+- **沒做，之後再說**：分隔線寬度不記住；插拔磁碟機時樹不會自動更新（要按 F5）；無障礙（UI Automation）。
+- **使用者回報：深色模式下，清單和樹的捲軸還是白色**（系統的 `WS_VSCROLL` 捲軸）。
+  - 要讓系統捲軸變深色，只有沒有文件的做法（`SetWindowTheme` 加上未公開的佈景主題名稱），不符合設計第 5 節和「只用公開文件」的規則。
+  - 所以改成自己畫捲軸：新增 `ScrollStrip`。它不是視窗，由清單和樹在自己的工作區右側畫，滑鼠和計時器訊息也由它們轉交；兩邊都拿掉了 `WS_VSCROLL`。
+    - 拖動滑塊；點軌道就捲一頁，按住不放時，先停 350 ms，再每 60 ms 捲一頁，捲到游標的位置就停；
+    - 平常是細的，滑鼠移上去或拖動時變寬、變亮。用 `TrackMouseEvent(TME_LEAVE)` 接收 `WM_MOUSELEAVE`，滑鼠離開時恢復；
+    - 顏色是配色新增的 `scrollThumb` 和 `scrollThumbActive`。高對比時只用系統顏色：平常是 `COLOR_WINDOWTEXT`，啟用時是 `COLOR_HIGHLIGHT`；
+    - 清單的捲軸從欄位標題下方開始，標題列的底色和分隔線照樣畫到最右邊；
+    - 面板用的也是 SizeList，所以面板的捲軸一起改了。
+  - 幾何計算 `scroll_geometry` 是純函式，由 ui-tests 測試：滑塊長度、最短長度、捲到最後一頁、拖動換算回列數（四捨五入、超出範圍時夾住，每個位置來回換算都一致）、點擊判斷的邊界。ui-tests 177 → 209 項，全部通過。
+  - 開發機截圖（深色）：樹和清單的捲軸都是深色底配灰色細滑塊。拖動、點軌道、滑鼠移上去，要由使用者實際操作確認。
+- **使用者回報：面板在點回左邊樹狀窗格後消失**。在右邊點一個資料夾，面板會出現；再點左邊樹狀窗格的資料夾，面板就消失，要等點了別的資料夾才會再出現。
+  - 新增診斷參數 `dirsize --panel --trace`：追蹤元件的觀察有變化時，就在 `%TEMP%\DirSize-panel-trace.txt` 寫一行，內容包括焦點所在視窗的類別（`GetGUIThreadInfo`）、選取、檢視和資料夾、規則的決定。紀錄只留在本機。
+  - 使用者在開發機（Windows 11）重現一次的紀錄：
+    - 焦點從檢視（`DirectUIHWND`）移到 `SysTreeView32` 的同一次檢查，選取從 1 個變成 0 個，面板就隱藏了；
+    - 之後約 8 秒都沒有導航。追蹤元件每 2 秒會完整檢查一次，所以點的是目前的資料夾：**在樹狀窗格點目前的資料夾不會導航，但會清掉右邊的選取**；
+    - 選取一直是 0 個，規則看不到變化，所以面板一直沒有回來，直到下一次導航。
+  - **修正規則**：選取變成 0 個時，如果焦點在樹狀窗格，就顯示目前資料夾。這和原本「在樹狀窗格點資料夾＝導航，顯示目前資料夾」一致。
+    - 焦點有沒有在樹狀窗格，也算進選取的識別，所以焦點和選取在不同次檢查才變化時，結果也一樣；
+    - 在右邊點空白處，照樣隱藏。
+    - 樹狀窗格是 `SysTreeView32` 這一點是實測的，文件沒有寫。這個類別名稱本身就是有公開文件的 TreeView 控制項。
+  - 把紀錄裡的順序寫成單元測試，另外補了「先清選取、下一次才換焦點」、非檔案系統資料夾、焦點在樹狀窗格時選到檔案等情況。ui-tests 209 → 220 項。兩種突變（拿掉新規則、焦點不算進識別）都抓得到。
+  - **使用者第二次實測（開發機，`--trace`）**：
+    - 在樹狀窗格點目前的資料夾，面板改成顯示目前資料夾，不再消失；
+    - 在樹狀窗格點上一層，導航後顯示上一層；
+    - 在右邊點資料夾就顯示它，點空白處就隱藏。
+    - 和以前不同的兩點，使用者確認都是預期的行為：
+      - 焦點從樹狀窗格回到右邊時，檔案總管自動選回的資料夾會顯示在面板上；
+      - 沒有選取時，焦點一回到右邊，面板就隱藏。
+
 ### 2026-11-05 第 5 階段決定與實測程式
 
 - 使用者同意 7.1～7.4 都照建議：Win32 原生 C++；Windows 11 分頁依實測，分辨不出就顯示「無法判斷」；右鍵選單只用傳統登錄動詞；面板顯示資料夾和檔案。
@@ -1166,6 +1233,24 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 第 5 階段前端 | [WM_NCCALCSIZE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-nccalcsize) |
 | 第 5 階段前端 | [WM_NCHITTEST](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-nchittest) |
 | 第 5 階段前端 | [WM_GETMINMAXINFO](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-getminmaxinfo) |
+| 資料夾樹 | [WIN32_FIND_DATAW（dwReserved0 是 reparse 標記）](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-win32_find_dataw) |
+| 資料夾樹 | [FINDEX_SEARCH_OPS（FindExSearchLimitToDirectories 只是建議）](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ne-minwinbase-findex_search_ops) |
+| 資料夾樹 | [FindFirstFileExW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-findfirstfileexw) |
+| 資料夾樹 | [SetThreadErrorMode](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-setthreaderrormode) |
+| 資料夾樹 | [GetLogicalDriveStringsW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getlogicaldrivestringsw) |
+| 資料夾樹 | [GetDriveTypeW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdrivetypew) |
+| 資料夾樹 | [GetVolumeInformationW（標籤）](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationw) |
+| 資料夾樹 | [CompareStringOrdinal](https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal) |
+| 資料夾樹 | [WM_SETCURSOR](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-setcursor) |
+| 資料夾樹 | [WM_CAPTURECHANGED](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-capturechanged) |
+| 自繪捲軸 | [TrackMouseEvent](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-trackmouseevent) |
+| 自繪捲軸 | [WM_MOUSELEAVE](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-mouseleave) |
+| 自繪捲軸 | [SetCapture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcapture) |
+| 自繪捲軸 | [RoundRect](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-roundrect) |
+| 自繪捲軸 | [SetTimer](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-settimer) |
+| 面板規則 | [GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getguithreadinfo) |
+| 面板規則 | [GUITHREADINFO（hwndFocus）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo) |
+| 面板規則 | [About Tree-View Controls（WC_TREEVIEW = "SysTreeView32"）](https://learn.microsoft.com/en-us/windows/win32/controls/tree-view-controls) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |

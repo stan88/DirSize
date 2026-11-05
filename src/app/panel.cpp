@@ -199,7 +199,14 @@ void Panel::OnCreate() {
     systemHook_ = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, OnWinEvent, 0, 0, flags);
     minimizeHook_ = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND, nullptr, OnWinEvent, 0, 0,
                                     flags);
-    tracker_ = std::make_unique<ExplorerTracker>(hwnd_, kExplorerChanged);
+    std::wstring tracePath;
+    if (wcsstr(GetCommandLineW(), L"--trace")) {
+        // Diagnostics: %TEMP%\DirSize-panel-trace.txt (local only).
+        wchar_t temp[MAX_PATH + 1] = {};
+        DWORD n = GetTempPathW(MAX_PATH + 1, temp);
+        if (n > 0 && n <= MAX_PATH) tracePath = std::wstring(temp) + L"DirSize-panel-trace.txt";
+    }
+    tracker_ = std::make_unique<ExplorerTracker>(hwnd_, kExplorerChanged, tracePath);
     SetTimer(hwnd_, kZOrderTimer, 250, nullptr);
 }
 

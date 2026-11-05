@@ -65,7 +65,7 @@ SizeList* SizeList::Create(HWND parent, HINSTANCE instance) {
     if (!RegisterOnce(instance, Proc)) return nullptr;
     auto* list = new SizeList();
     list->parent_ = parent;
-    HWND hwnd = CreateWindowExW(0, kClassName, L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP, 0, 0, 0, 0,
+    HWND hwnd = CreateWindowExW(0, kClassName, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 0, 0,
                                 parent, nullptr, instance, list);
     if (!hwnd) {
         delete list;
@@ -119,6 +119,7 @@ void SizeList::SetPalette(const Palette& palette) {
 
 void SizeList::SetDpi(UINT dpi) {
     dpi_ = dpi ? dpi : 96;
+    scroll_.SetDpi(dpi_);
     UpdateMetrics();
     UpdateScroll();
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -156,13 +157,18 @@ void SizeList::UpdateScroll() {
     const int count = static_cast<int>(items_.size());
     const int page = VisibleRows();
     top_ = std::clamp(top_, 0, std::max(0, count - page));
-    SCROLLINFO si{sizeof(si)};
-    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
-    si.nMin = 0;
-    si.nMax = std::max(0, count - 1);
-    si.nPage = static_cast<UINT>(page);
-    si.nPos = top_;
-    SetScrollInfo(hwnd_, SB_VERT, &si, TRUE);
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    // The bar runs below the column header.
+    scroll_.SetRect(RECT{rc.right - scroll_.Width(), headerHeight_, rc.right, rc.bottom});
+    scroll_.SetRange(count, page, top_);
+}
+
+RECT SizeList::ContentRect() const {
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    if (scroll_.Visible()) rc.right = std::max(rc.left, rc.right - scroll_.Width());
+    return rc;
 }
 
 void SizeList::ScrollTo(int top) {
@@ -218,8 +224,7 @@ int SizeList::HitRow(int y) const {
 
 int SizeList::HitHeader(int x, int y) const {
     if (y >= headerHeight_) return -1;
-    RECT rc;
-    GetClientRect(hwnd_, &rc);
+    RECT rc = ContentRect();
     std::vector<RECT> cols;
     ColumnRects(rc, cols);
     for (size_t i = 0; i < cols.size(); ++i) {
@@ -315,14 +320,19 @@ void SizeList::PaintRow(HDC dc, int index, const RECT& row) {
     }
 }
 
-void SizeList::Paint(HDC dc, const RECT& client) {
-    Fill(dc, client, palette_.background);
+void SizeList::Paint(HDC dc, const RECT& fullClient) {
+    Fill(dc, fullClient, palette_.background);
     HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT));
     SetBkMode(dc, TRANSPARENT);
+    // Rows and columns stop at the scroll bar; the header background and
+    // its separator run the full width.
+    RECT client = fullClient;
+    if (scroll_.Visible()) client.right = std::max(client.left, client.right - scroll_.Width());
 
     // Header.
     RECT header{client.left, client.top, client.right, client.top + headerHeight_};
-    Fill(dc, header, palette_.headerBackground);
+    RECT headerFull{fullClient.left, fullClient.top, fullClient.right, fullClient.top + headerHeight_};
+    Fill(dc, headerFull, palette_.headerBackground);
     std::vector<RECT> cols;
     ColumnRects(header, cols);
     for (size_t c = 0; c < columns_.size(); ++c) {
@@ -332,7 +342,7 @@ void SizeList::Paint(HDC dc, const RECT& client) {
         if (columns_[c] == sortColumn_) title += sortDescending_ ? L" ▾" : L" ▴";
         Text(dc, title, r, columns_[c] == Column::Name ? DT_LEFT : DT_RIGHT, palette_.secondaryText);
     }
-    RECT sep{client.left, header.bottom - std::max(1, Scale(1)), client.right, header.bottom};
+    RECT sep{fullClient.left, header.bottom - std::max(1, Scale(1)), fullClient.right, header.bottom};
     Fill(dc, sep, palette_.line);
 
     if (items_.empty()) {
@@ -349,6 +359,7 @@ void SizeList::Paint(HDC dc, const RECT& client) {
             PaintRow(dc, i, row);
         }
     }
+    scroll_.Paint(dc, palette_);
     SelectObject(dc, oldFont);
 }
 
@@ -372,6 +383,7 @@ LRESULT SizeList::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE:
             dpi_ = GetDpiForWindow(hwnd_);
+            scroll_.SetDpi(dpi_);
             UpdateMetrics();
             return 0;
         case WM_SIZE:
@@ -399,23 +411,27 @@ LRESULT SizeList::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             EndPaint(hwnd_, &ps);
             return 0;
         }
-        case WM_VSCROLL: {
-            SCROLLINFO si{sizeof(si)};
-            si.fMask = SIF_ALL;
-            GetScrollInfo(hwnd_, SB_VERT, &si);
-            int top = top_;
-            switch (LOWORD(wp)) {
-                case SB_LINEUP: top -= 1; break;
-                case SB_LINEDOWN: top += 1; break;
-                case SB_PAGEUP: top -= VisibleRows(); break;
-                case SB_PAGEDOWN: top += VisibleRows(); break;
-                case SB_THUMBTRACK:
-                case SB_THUMBPOSITION: top = si.nTrackPos; break;
-                case SB_TOP: top = 0; break;
-                case SB_BOTTOM: top = static_cast<int>(items_.size()); break;
-            }
-            ScrollTo(top);
+        case WM_MOUSEMOVE: {
+            int pos;
+            if (scroll_.MouseMove(hwnd_, POINT{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}, pos) && pos >= 0) ScrollTo(pos);
             return 0;
+        }
+        case WM_LBUTTONUP:
+            scroll_.ButtonUp(hwnd_);
+            return 0;
+        case WM_CAPTURECHANGED:
+            scroll_.CaptureLost(hwnd_);
+            return 0;
+        case WM_MOUSELEAVE:
+            scroll_.MouseLeave(hwnd_);
+            return 0;
+        case WM_TIMER: {
+            int pos;
+            if (scroll_.Timer(hwnd_, wp, pos)) {
+                if (pos >= 0) ScrollTo(pos);
+                return 0;
+            }
+            break;
         }
         case WM_MOUSEWHEEL: {
             UINT lines = 3;
@@ -430,6 +446,11 @@ LRESULT SizeList::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONDOWN: {
             SetFocus(hwnd_);
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            int pos;
+            if (scroll_.ButtonDown(hwnd_, POINT{x, y}, pos)) {
+                if (pos >= 0) ScrollTo(pos);
+                return 0;
+            }
             int h = HitHeader(x, y);
             if (h >= 0) {
                 Column c = columns_[h];
@@ -448,6 +469,12 @@ LRESULT SizeList::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_LBUTTONDBLCLK: {
+            // On the scroll bar, the second click of a fast pair is a click.
+            int pos;
+            if (scroll_.ButtonDown(hwnd_, POINT{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}, pos)) {
+                if (pos >= 0) ScrollTo(pos);
+                return 0;
+            }
             int row = HitRow(GET_Y_LPARAM(lp));
             if (row >= 0) PostMessageW(parent_, kListOpenItem, static_cast<WPARAM>(row), 0);
             return 0;

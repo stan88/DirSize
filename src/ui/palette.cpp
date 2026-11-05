@@ -20,6 +20,8 @@ Palette MakePalette(bool dark, bool highContrast, COLORREF accent, const SystemC
         p.bar = system.highlight;
         p.barTrack = system.window;
         p.warning = system.windowText;
+        p.scrollThumb = system.windowText;
+        p.scrollThumbActive = system.highlight;
         return p;
     }
     p.dark = dark;
@@ -33,6 +35,8 @@ Palette MakePalette(bool dark, bool highContrast, COLORREF accent, const SystemC
         p.selectionText = RGB(0xFF, 0xFF, 0xFF);
         p.barTrack = RGB(0x38, 0x38, 0x38);
         p.warning = RGB(0xFF, 0xB0, 0x5C);
+        p.scrollThumb = RGB(0x5C, 0x5C, 0x5C);
+        p.scrollThumbActive = RGB(0x80, 0x80, 0x80);
     } else {
         p.background = RGB(0xFF, 0xFF, 0xFF);
         p.text = RGB(0x1A, 0x1A, 0x1A);
@@ -43,6 +47,8 @@ Palette MakePalette(bool dark, bool highContrast, COLORREF accent, const SystemC
         p.selectionText = RGB(0x00, 0x00, 0x00);
         p.barTrack = RGB(0xE8, 0xE8, 0xE8);
         p.warning = RGB(0xA3, 0x4A, 0x00);
+        p.scrollThumb = RGB(0xC2, 0xC2, 0xC2);
+        p.scrollThumbActive = RGB(0x8A, 0x8A, 0x8A);
     }
     p.bar = accent;
     return p;

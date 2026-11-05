@@ -19,6 +19,8 @@ struct Palette {
     COLORREF bar = 0;            // share bar
     COLORREF barTrack = 0;       // share bar background
     COLORREF warning = 0;        // "no access"
+    COLORREF scrollThumb = 0;        // self-drawn scroll bar (scroll_strip.h)
+    COLORREF scrollThumbActive = 0;  // hovered or dragged
 };
 
 // System colors used in high contrast (GetSysColor), passed in for testing.

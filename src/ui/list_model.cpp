@@ -6,14 +6,14 @@
 
 namespace dirsize::ui {
 
-namespace {
-
 int CompareNames(const std::wstring& a, const std::wstring& b) {
     int r = CompareStringEx(LOCALE_NAME_USER_DEFAULT, NORM_IGNORECASE | SORT_DIGITSASNUMBERS, a.c_str(),
                             static_cast<int>(a.size()), b.c_str(), static_cast<int>(b.size()), nullptr, nullptr, 0);
     if (r == 0) return a.compare(b);  // CompareStringEx failed: ordinal order
     return r - CSTR_EQUAL;            // CSTR_LESS_THAN / EQUAL / GREATER_THAN -> -1 / 0 / 1
 }
+
+namespace {
 
 std::uint64_t Key(const ListItem& item, Column column) {
     switch (column) {

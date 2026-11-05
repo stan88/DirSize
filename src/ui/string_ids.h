@@ -29,3 +29,4 @@
 #define IDS_FILES_SUFFIX        161
 #define IDS_HINT                170
 #define IDS_PICK_FOLDER         171
+#define IDS_DRIVE_LABEL         180

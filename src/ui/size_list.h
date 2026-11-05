@@ -12,6 +12,7 @@
 
 #include "ui/list_model.h"
 #include "ui/palette.h"
+#include "ui/scroll_strip.h"
 
 namespace dirsize::ui {
 
@@ -58,6 +59,7 @@ private:
     int HitHeader(int x, int y) const;
     void Select(int index, bool ensureVisible);
     void ScrollTo(int top);
+    RECT ContentRect() const;  // the client area left of the scroll bar
     void Sort();
     int Scale(int dip) const { return MulDiv(dip, static_cast<int>(dpi_), 96); }
 
@@ -78,6 +80,7 @@ private:
     bool sortDescending_ = true;
     int wheelRemainder_ = 0;
     bool compact_ = false;
+    ScrollStrip scroll_;
 };
 
 }  // namespace dirsize::ui

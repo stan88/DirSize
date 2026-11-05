@@ -2,8 +2,8 @@
 
 namespace dirsize::ui {
 
-std::wstring SelectionKey(std::uint32_t count, const std::wstring& path) {
-    return std::to_wstring(count) + L"|" + path;
+std::wstring SelectionKey(std::uint32_t count, const std::wstring& path, bool inNavigationPane) {
+    return std::to_wstring(count) + L"|" + path + (inNavigationPane ? L"|nav" : L"");
 }
 
 void PanelRules::Set(const std::wstring& folder) {
@@ -15,19 +15,24 @@ void PanelRules::Set(const std::wstring& folder) {
 void PanelRules::Navigated(const std::wstring& folder, bool isFileSystemFolder, const std::wstring& selectionKey) {
     haveView_ = true;
     baseline_ = selectionKey;
-    Set(isFileSystemFolder ? folder : std::wstring());
+    current_ = isFileSystemFolder ? folder : std::wstring();
+    Set(current_);
 }
 
-void PanelRules::Selection(std::uint32_t count, const std::wstring& path, bool isFileSystemFolder) {
+void PanelRules::Selection(std::uint32_t count, const std::wstring& path, bool isFileSystemFolder,
+                           bool inNavigationPane) {
     if (!haveView_) return;
-    std::wstring key = SelectionKey(count, path);
+    std::wstring key = SelectionKey(count, path, inNavigationPane);
     if (key == baseline_) return;
     baseline_ = key;
-    Set(count == 1 && isFileSystemFolder ? path : std::wstring());
+    if (count == 1 && isFileSystemFolder) Set(path);
+    else if (count == 0 && inNavigationPane) Set(current_);
+    else Set(std::wstring());
 }
 
 void PanelRules::ViewLost() {
     haveView_ = false;
+    current_.clear();
     baseline_.clear();
     Set(std::wstring());
 }
