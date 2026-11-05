@@ -58,6 +58,30 @@ add_library(dirsize_service STATIC
 target_include_directories(dirsize_service PUBLIC src)
 target_link_libraries(dirsize_service PUBLIC dirsize_core)
 
+# Phase 5 front end: pure logic (unit-tested by ui-tests).
+add_library(dirsize_ui_core STATIC
+    src/ui/format.cpp
+    src/ui/list_model.cpp
+    src/ui/palette.cpp
+    src/ui/placement.cpp
+    src/ui/panel_rules.cpp
+)
+target_include_directories(dirsize_ui_core PUBLIC src)
+
+# Phase 5 front end: window pieces (theme needs C++/WinRT: WindowsApp.lib).
+add_library(dirsize_ui STATIC
+    src/ui/strings.cpp
+    src/ui/theme.cpp
+    src/ui/size_list.cpp
+    src/ui/folder_source.cpp
+    src/ui/explorer_tracker.cpp
+)
+target_link_libraries(dirsize_ui PUBLIC dirsize_ui_core dirsize_service WindowsApp dwmapi ole32 oleaut32 uuid shell32)
+
+# The front end executable (Windows subsystem).
+add_executable(dirsize WIN32 src/app/main.cpp src/app/panel.cpp src/app/dirsize.rc src/app/dirsize.manifest)
+target_link_libraries(dirsize PRIVATE dirsize_ui)
+
 add_executable(dirsize-cli src/cli/main.cpp)
 target_link_libraries(dirsize-cli PRIVATE dirsize_service psapi)
 
@@ -92,3 +116,6 @@ add_test(NAME live-tests COMMAND live-tests)
 add_executable(service-tests tests/service_tests.cpp)
 target_link_libraries(service-tests PRIVATE dirsize_service)
 add_test(NAME service-tests COMMAND service-tests)
+add_executable(ui-tests tests/ui_tests.cpp)
+target_link_libraries(ui-tests PRIVATE dirsize_ui_core)
+add_test(NAME ui-tests COMMAND ui-tests)

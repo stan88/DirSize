@@ -10,6 +10,7 @@
 #include <winioctl.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include "core/dir_listing.h"
+#include "core/dir_walker.h"
 #include "core/index.h"
 #include "core/layout_index_builder.h"
 #include "core/layout_parser.h"
@@ -596,6 +598,40 @@ void TestListSameHandleTwice() {
     RemoveDirectoryW(root.c_str());
 }
 
+// WalkTree's cancel flag (Phase 5: the front end cancels a fallback walk
+// when the user moves on): a set flag stops before the root is opened, a
+// clear flag changes nothing.
+void TestWalkTreeCancel() {
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    const std::wstring root = std::wstring(temp) + L"dirsize-cancel-test-" + std::to_wstring(GetCurrentProcessId());
+    const std::wstring sub = root + L"\\sub";
+    CHECK(CreateDirectoryW(root.c_str(), nullptr));
+    CHECK(CreateDirectoryW(sub.c_str(), nullptr));
+    CHECK(WriteFileBytes(sub + L"\\f.txt", 300));
+
+    const std::wstring extended = ToExtendedPath(root);
+    WalkResult plain = WalkTree(extended);
+    std::atomic<bool> flag{false};
+    WalkResult notCancelled = WalkTree(extended, &flag);
+    CHECK(plain.rootOpened && !plain.cancelled);
+    CHECK(notCancelled.rootOpened && !notCancelled.cancelled);
+    CHECK_EQ(notCancelled.totals.logicalBytes, 300);
+    CHECK_EQ(notCancelled.totals.logicalBytes, plain.totals.logicalBytes);
+    CHECK_EQ(notCancelled.children.size(), 1);
+
+    flag = true;
+    WalkResult cancelled = WalkTree(extended, &flag);
+    CHECK(cancelled.cancelled);
+    CHECK(!cancelled.rootOpened);
+    CHECK_EQ(cancelled.totals.files, 0);
+    CHECK(cancelled.children.empty());
+
+    DeleteFileW((sub + L"\\f.txt").c_str());
+    CHECK(RemoveDirectoryW(sub.c_str()));
+    CHECK(RemoveDirectoryW(root.c_str()));
+}
+
 int main() {
     TestParserBasic();
     TestParserTruncation();
@@ -605,6 +641,7 @@ int main() {
     TestLayoutBuilderNoRoot();
     TestWalkerTree();
     TestListSameHandleTwice();
+    TestWalkTreeCancel();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

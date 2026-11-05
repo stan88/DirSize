@@ -32,7 +32,7 @@ void CountError(WalkResult& result, DWORD error) {
 
 }  // namespace
 
-WalkResult WalkTree(const std::wstring& extendedRoot) {
+WalkResult WalkTree(const std::wstring& extendedRoot, const std::atomic<bool>* cancel) {
     WalkResult result;
     std::vector<ULONGLONG> buffer(kBufferBytes / sizeof(ULONGLONG));
     const DWORD bufferBytes = static_cast<DWORD>(buffer.size() * sizeof(ULONGLONG));
@@ -43,6 +43,10 @@ WalkResult WalkTree(const std::wstring& extendedRoot) {
     bool isRoot = true;
 
     while (!pending.empty()) {
+        if (cancel && cancel->load(std::memory_order_relaxed)) {
+            result.cancelled = true;
+            return result;
+        }
         PendingFolder folder = std::move(pending.back());
         pending.pop_back();
 

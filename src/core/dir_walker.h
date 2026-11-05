@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ struct WalkResult {
     std::uint64_t otherErrors = 0;
     std::uint64_t reparsePointsSkipped = 0;  // junctions / directory symlinks
     bool rootOpened = false;
+    bool cancelled = false;  // stopped early by `cancel`; totals are partial
     unsigned long rootError = 0;  // Win32 error if the root could not be opened
 };
 
@@ -34,6 +36,8 @@ struct WalkResult {
 // - Directory reparse points (junctions, symlinks) are not followed, so data
 //   is never counted twice through a link.
 // - Hard-linked files are counted once per link.
-WalkResult WalkTree(const std::wstring& extendedRoot);
+// - `cancel`, when given, is checked before each folder is opened; once it is
+//   true the walk stops and the result has `cancelled` set.
+WalkResult WalkTree(const std::wstring& extendedRoot, const std::atomic<bool>* cancel = nullptr);
 
 }  // namespace dirsize

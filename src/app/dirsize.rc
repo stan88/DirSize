@@ -1,0 +1,37 @@
+// DirSize front end resources. UTF-8.
+#pragma code_page(65001)
+
+#include <winres.h>
+#include "ui/string_ids.h"
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL
+
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE           "DirSize"
+    IDS_COL_NAME            "名稱"
+    IDS_COL_SIZE            "大小"
+    IDS_COL_ALLOCATED       "磁碟用量"
+    IDS_COL_SHARE           "比例"
+    IDS_COL_FILES           "檔案數"
+    IDS_NO_ACCESS           "沒有權限"
+    IDS_EMPTY               "沒有子項目"
+    IDS_LOADING             "讀取中…"
+    IDS_WALKING             "逐目錄掃描中…"
+    IDS_SRC_SERVICE         "來源：DirSize 服務"
+    IDS_SRC_WALK            "來源：逐目錄掃描"
+    IDS_NOTE_UPDATING       "服務正在更新，數字可能稍舊"
+    IDS_NOTE_STARTING       "服務啟動中，先逐目錄掃描"
+    IDS_NOTE_NOT_RUNNING    "服務未執行，改為逐目錄掃描"
+    IDS_NOTE_NOT_INSTALLED  "未安裝服務，改為逐目錄掃描"
+    IDS_NOTE_NOT_INDEXED    "這個磁碟沒有索引，改為逐目錄掃描"
+    IDS_NOTE_INDEXING       "服務正在建立索引，先逐目錄掃描"
+    IDS_NOTE_NOT_LOCAL      "不是本機磁碟，改為逐目錄掃描"
+    IDS_ERR_NOT_FOUND       "找不到這個資料夾"
+    IDS_ERR_ACCESS          "沒有權限讀取這個資料夾"
+    IDS_ERR_FAILED          "無法讀取，錯誤碼 "
+    IDS_TOTAL               "合計 "
+    IDS_FILES_SUFFIX        " 個檔案"
+    IDS_HINT                "Enter 進入　Backspace 上一層　Ctrl+O 選擇資料夾　F5 重新整理"
+    IDS_PICK_FOLDER         "選擇資料夾"
+END

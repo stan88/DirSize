@@ -808,6 +808,62 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - 傳統登錄動詞在 Windows 11 上，依文件推論會出現在「顯示更多選項」裡。
 - **以下頁面打不開**（404）：IWebBrowser2 的 Document 屬性、`ShellFolderView` 物件頁、`DShellFolderViewEvents`、高對比模式總覽。
 
+### 2026-11-05 第 5 階段前端：共用元件與第一版獨立視窗
+
+- **建置確認**：C++/WinRT 用的是 Windows SDK 10.0.26100.0 內附的 `cppwinrt` 標頭檔。在 `/MT`、`/W4`、`/permissive-`、C++20 下可以編譯，沒有警告，連結 `WindowsApp.lib`。`<unknwn.h>` 放在 winrt 標頭之前。
+- **主題**：
+  - 依「Support Dark and Light themes in Win32 apps」：讀 `UISettings` 的前景色，用文件裡的 `IsColorLight` 公式判斷；前景色是亮色就是深色模式。
+  - 切換通知用 `ColorValuesChanged`。文件沒說事件在哪個執行緒觸發，所以處理函式只 `PostMessage`，介面執行緒收到後重新讀取。
+  - 文件沒有寫 `DWMWA_USE_IMMERSIVE_DARK_MODE` 支援哪個 build（DWMWINDOWATTRIBUTE 頁寫的是 Windows 11 build 22000 起），所以直接呼叫，失敗就忽略。
+  - 高對比用 `SPI_GETHIGHCONTRAST` 和 `GetSysColor`。比例長條和百分比分開畫，不在長條上疊字。
+- **DPI**：依「Setting the default DPI awareness for a process」，用 manifest 宣告 PerMonitorV2，不用 API。manifest 的 `supportedOS` 區段沒有加，因為 GUID 沒有從文件確認過，程式也不需要。
+- **純邏輯**放在 `dirsize_ui_core`，由 `ui-tests` 測試：
+  - 大小與數字格式；
+  - 排序：`CompareStringEx` 加 `SORT_DIGITSASNUMBERS`，所以 file2 排在 file10 前面；
+  - 配色；
+  - 面板位置：從實測程式移植；
+  - 面板規則：從實測程式移植，包括「換檢視後原本的選取當基準」。
+- **逐目錄掃描可以取消**：
+  - `WalkTree` 加上 `cancel` 參數，每開一個資料夾前檢查一次，core-tests 加了測試；
+  - 前端換資料夾時就取消上一次的掃描；
+  - 掃描期間，執行緒進入背景模式（`SetThreadPriority` 的 `THREAD_MODE_BACKGROUND_BEGIN`），文件說這會降低資源排程優先順序。
+- **資料來源**（`FolderSource`，在工作執行緒）：
+  - 先問服務，分頁取完全部子資料夾；
+  - 服務回 `NotIndexed`、`Busy`、`PathRejected`，或連不上時，改成逐目錄掃描；
+  - 連不上時用 SCM 分辨「未安裝」「已停止」「設成自動啟動但還沒啟動」；
+  - 檔案直接用使用者自己的權限列出。
+- **第一版獨立視窗**（`dirsize.exe [資料夾]`）：
+  - 上方是路徑和狀態列，下方是自繪清單（名稱、大小、磁碟用量、比例、檔案數），點欄位標題排序；
+  - Enter 進入，Backspace 上一層，Ctrl+O 選擇資料夾（`IFileOpenDialog`），F5 重新整理；
+  - 所有介面文字都在 `.rc` 字串表裡。
+- **開發機截圖檢查**（深色模式，未安裝服務，逐目錄掃描）：版面、深色標題列、比例長條都正常。截圖發現 `FormatCount` 在位數不是 3 的倍數時逗號放錯，例如「3,9,724」，原因是無號整數相減下溢。已修正，並補上 5 位數、2 位數等測試。ui-tests 75 項通過。
+- **面板**（`dirsize.exe --panel`）：
+  - `ExplorerTracker`：在自己的 STA 執行緒上執行，邏輯從實測程式移植。
+    - 檔案總管在前景時，每 250 ms 檢查一次；
+    - 記住目前的檢視，每 2 秒或檢視不見、前面分頁換了時，才重新列出；
+    - Windows 11 分頁用 z-order 判斷；
+    - 遇到 `RPC_E_DISCONNECTED`、`RPC_S_SERVER_UNAVAILABLE`、`CO_E_OBJNOTCONNECTED`，就丟掉 COM 物件，下次重新建立，處理檔案總管重新啟動的情況；
+    - 結束時最多等 2 秒，等不到就不等了。
+  - 面板規則用 `PanelRules`，已有單元測試。只有規則的結果改變時，才通知介面執行緒。
+  - 面板視窗：
+    - `WS_POPUP` 加 `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`，不設 owner（VM 實測的結論）。點面板不會把檔案總管切到後面。
+    - 位置用 `PlacePanel`；貼在內側時，每 250 ms 確認自己在檔案總管上面。
+    - WinEvent 只收檔案總管那個行程的位置事件。
+    - 清單只列子資料夾（名稱、磁碟用量、比例），用精簡欄寬。
+  - 開發機上的自動檢查沒有完成：用程式開檔案總管視窗時，它沒有變成前景視窗，前景是另一個程式，所以面板照規則沒有出現。檢查完就關掉了那個測試用的視窗。要由使用者實際操作驗證。
+- **使用者要求的三項**（2026-11-05）：
+  - **圓角**：依「Apply rounded corners in desktop apps for Windows 11」，沒有外框的視窗不會自動變圓角，要用 `DWMWA_WINDOW_CORNER_PREFERENCE` 設 `DWMWCP_ROUND`。文件說這只是給系統的提示，而且**在 VM 裡、或視窗最大化、貼齊時不會變圓角**。DWMWINDOWATTRIBUTE 頁寫明 Windows 11 build 22000 起支援。
+    - 設定成功時，外框交給 DWM 畫，用 `DWMWA_BORDER_COLOR` 設成主題的分隔線顏色；
+    - 設定失敗時（Windows 10），面板維持自己畫的 1 px 直角外框。
+  - **雙擊導航**：面板把路徑交給追蹤執行緒，由它用 `SHParseDisplayName` 和目前分頁的 `IShellBrowser::BrowseObject(SBSP_SAMEBROWSER | SBSP_ABSOLUTE)` 讓同一個檔案總管視窗切換資料夾；`SHParseDisplayName` 的文件要求在背景執行緒呼叫。下一次檢查看到新的檢視後，面板就跟著顯示新資料夾。
+  - **調整大小**（使用者選了寬度和高度都可以調、要記住）：
+    - `WS_THICKFRAME` 加上 `WM_NCCALCSIZE`（不顯示外框）；`WM_NCHITTEST` 只讓離檔案總管較遠的那一邊和下緣可以拖。清單在這些邊緣回傳 `HTTRANSPARENT`，交給面板處理。
+    - 拖動期間不跟著檔案總管移動；放開後，以 DIP 為單位存進 `HKCU\Software\DirSize` 的 `PanelWidth`、`PanelHeight`。
+    - 高度拉到跟檔案總管一樣高時存成 0，代表恢復成跟著檔案總管的高度。
+    - 寬度限制 240～900 DIP，高度至少 160 DIP。
+    - 位置的純函式加了高度參數和「哪一邊調寬度」的規則，ui-tests 81 項通過。
+- **使用者在開發機（Windows 11）實測面板**：圓角與外框、雙擊導航、調整大小、面板跟著檔案總管，都正常。
+
 ### 2026-11-05 第 5 階段決定與實測程式
 
 - 使用者同意 7.1～7.4 都照建議：Win32 原生 C++；Windows 11 分頁依實測，分辨不出就顯示「無法判斷」；右鍵選單只用傳統登錄動詞；面板顯示資料夾和檔案。
@@ -1087,6 +1143,29 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 第 5 階段實測 | [Single-Threaded Apartments](https://learn.microsoft.com/en-us/windows/win32/com/single-threaded-apartments) |
 | 第 5 階段實測 | Windows SDK 10.0.26100.0 `um/shldisp.h`：`DShellFolderViewEvents`（`DIID_DShellFolderViewEvents`）；`um/shdispid.h`：`DISPID_SELECTIONCHANGED` |
 | 第 5 階段實測 | Windows SDK 10.0.26100.0 `um/shlguid.h`：`SID_STopLevelBrowser`、`SID_SShellBrowser` 的定義；`um/exdisp.h`：`CLSID_ShellWindows`、`SWC_EXPLORER` |
+| 第 5 階段前端 | [UISettings](https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings) |
+| 第 5 階段前端 | [UISettings.ColorValuesChanged](https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.colorvalueschanged) |
+| 第 5 階段前端 | [UIColorType](https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uicolortype) |
+| 第 5 階段前端 | [Setting the default DPI awareness for a process](https://learn.microsoft.com/en-us/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process) |
+| 第 5 階段前端 | [SetThreadPriority（THREAD_MODE_BACKGROUND_BEGIN）](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setthreadpriority) |
+| 第 5 階段前端 | [SystemParametersInfoForDpi](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfofordpi) |
+| 第 5 階段前端 | [WM_DPICHANGED](https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-dpichanged) |
+| 第 5 階段前端 | [CompareStringEx（SORT_DIGITSASNUMBERS）](https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringex) |
+| 第 5 階段前端 | [LoadStringW（cchBufferMax 為 0 時回傳唯讀指標）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-loadstringw) |
+| 第 5 階段前端 | [IFileOpenDialog／FOS_PICKFOLDERS](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/ne-shobjidl_core-_fileopendialogoptions) |
+| 第 5 階段前端 | [CreateAcceleratorTableW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createacceleratortablew) |
+| 第 5 階段前端 | [QueryServiceConfigW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-queryserviceconfigw) |
+| 第 5 階段前端 | [COM Error Codes（CO_E_OBJNOTCONNECTED）](https://learn.microsoft.com/en-us/windows/win32/com/com-error-codes-1) |
+| 第 5 階段前端 | [RPC Return Values（RPC_S_SERVER_UNAVAILABLE）](https://learn.microsoft.com/en-us/windows/win32/rpc/rpc-return-values) |
+| 第 5 階段前端 | [Apply rounded corners in desktop apps for Windows 11](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/ui/apply-rounded-corners) |
+| 第 5 階段前端 | [IShellBrowser::BrowseObject](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishellbrowser-browseobject) |
+| 第 5 階段前端 | [SHParseDisplayName](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shparsedisplayname) |
+| 第 5 階段前端 | [ILFree](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-ilfree) |
+| 第 5 階段前端 | [RegGetValueW](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-reggetvaluew) |
+| 第 5 階段前端 | [RegSetKeyValueW](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regsetkeyvaluew) |
+| 第 5 階段前端 | [WM_NCCALCSIZE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-nccalcsize) |
+| 第 5 階段前端 | [WM_NCHITTEST](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-nchittest) |
+| 第 5 階段前端 | [WM_GETMINMAXINFO](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-getminmaxinfo) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
