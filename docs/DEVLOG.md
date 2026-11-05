@@ -783,6 +783,131 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 - **負面測試**：`C:\ProgramData\DirSize` 和 `System Volume Information` 都被 **`AccessCheck`** 拒絕。服務以 SYSTEM 執行時兩個都打得開，但會用呼叫者的 token 判斷後拒絕。UNC、裝置路徑、`..` 都回「路徑不接受」。VM 沒有 D:，所以查 `D:\` 回「找不到」。
 - 有一次在系統管理員視窗執行測試，全部得到錯誤 2（找不到 pipe）。那時是重開機後、延遲啟動之前，服務在 1 分多鐘後才啟動。第 5 階段的前端遇到這種情況，要顯示「服務啟動中」，不能當成錯誤。
 
+### 2026-11-05 第 5 階段查證與設計草案
+
+設計草案見 [DESIGN-phase5.md](DESIGN-phase5.md)。使用者的需求：
+
+- 除了獨立視窗，還要一個**跟著檔案總管的面板**：貼在檔案總管視窗旁邊，跟著目前資料夾切換。
+- 面板的佈景主題要跟著系統設定。
+
+查證結果（**沒有官方文件的部分要先實測**）：
+
+- **有文件**：
+  - 用 `IShellWindows` 列出檔案總管視窗，用 `SWC_EXPLORER` 區分出檔案總管；
+  - 取得視窗目前資料夾：`IShellBrowser::QueryActiveShellView` → `IFolderView::GetFolder` → `IPersistFolder2::GetCurFolder`，最後得到絕對 PIDL；
+  - 跟著視窗：`SetWinEventHook` 的前景、位置、縮到最小事件；`DWMWA_EXTENDED_FRAME_BOUNDS` 取得實際看得到的外框；
+  - 主題：`UISettings` 和 `ColorValuesChanged`；高對比用 `SPI_GETHIGHCONTRAST`。
+- **沒有文件**：
+  - 檔案總管切換資料夾時會送出的事件：`DWebBrowserEvents2` 是 IE 的文件，沒有提到檔案總管；
+  - **Windows 11 檔案總管的分頁**：找不到任何官方文件；
+  - 跨行程 owned window 的注意事項；
+  - ListView、TreeView 這些內建控制項的深色模式。
+- **有限制**：
+  - `DWMWA_USE_IMMERSIVE_DARK_MODE` 從 Windows 11 build 22000 起才支援，所以 Windows 10 上的標題列一律是淺色；
+  - Windows 11 新的頂層右鍵選單，要用 `IExplorerCommand` 加上 sparse package，而且 package 必須用目標電腦信任的憑證簽章；
+  - 傳統登錄動詞在 Windows 11 上，依文件推論會出現在「顯示更多選項」裡。
+- **以下頁面打不開**（404）：IWebBrowser2 的 Document 屬性、`ShellFolderView` 物件頁、`DShellFolderViewEvents`、高對比模式總覽。
+
+### 2026-11-05 第 5 階段決定與實測程式
+
+- 使用者同意 7.1～7.4 都照建議：Win32 原生 C++；Windows 11 分頁依實測，分辨不出就顯示「無法判斷」；右鍵選單只用傳統登錄動詞；面板顯示資料夾和檔案。
+- **使用者修正需求**：面板不是「跟著目前資料夾」，而是**在檔案總管點選一個資料夾時，列出它底下各子資料夾的大小**。面板固定貼在檔案總管旁；點別的資料夾就換內容，點檔案或空白處就隱藏；不做「跟著目前資料夾」的面板。設計已改寫（DESIGN-phase5.md 第 1、4、7 節）。
+- 查證：
+  - `IShellView::GetItemObject` 的 `SVGIO_BACKGROUND` 搭配 `IID_IDispatch`，文件寫明會得到檢視的 ShellFolderView 物件；
+  - `ShellFolderView.SelectionChanged` 文件只有 JScript 的寫法，沒寫 C++ 怎麼訂閱、也沒寫 DISPID；
+  - `DShellFolderViewEvents`（`DIID_DShellFolderViewEvents`）在 SDK 的 `shldisp.h`，`DISPID_SELECTIONCHANGED`（200）在 `shdispid.h`；
+  - `IFolderView2::GetSelection` 的文件寫「沒有選取時回 `S_FALSE`」。
+- 實測程式 `tools/explorer_probe.cpp`（不出貨，一般權限）：`windows`、`events`、`dock owned|events --selection events|poll`（可加 `--hang`、`--seconds`）、`verb install|remove`。測試腳本 `scripts/explorer-probe-test.ps1`，打包腳本 `scripts/package-explorer-probe.ps1`。
+- 開發機上的試跑（`windows`）：
+  - 每個項目的 `IShellBrowser` 視窗類別是 `ShellTabWindowClass`，檢視視窗是 `SHELLDLL_DefView`，用 `SID_STopLevelBrowser` 取得；讀三個項目約 20 ms；
+  - 三個視窗都能跨行程訂閱 `DShellFolderViewEvents`（`Advise` 成功）；
+  - **什麼都沒選時，`GetSelection` 回 `0x80070490`（`ERROR_NOT_FOUND`），不是文件寫的 `S_FALSE`**。程式兩者都當成「選了 0 個」。
+  - 點選後的實際事件、反應時間、CPU、多分頁，還沒測。
+
+#### VM 實測：點選資料夾時的面板（2026-11-05）
+
+測試機：Windows 10 22H2（build 19045），一般使用者權限。Windows 10 沒有檔案總管分頁，所以這次沒有測到分頁。
+
+| 測試 | 時間 | CPU（本程式） | 檢查目前檢視（每 250 ms） | 讀選取 | `SelectionChanged` 事件 |
+|---|---|---|---|---|---|
+| 事件模式，不設 owner | 93 s | 0.42 s（0.45%） | 315 次，平均 13.1 ms，最長 1047 ms | 8 次，平均 0.8 ms | 1 次 |
+| 每 250 ms 讀選取，不設 owner | 93 s | 0.39 s（0.42%） | 290 次，平均 9.0 ms，最長 112 ms | 290 次，平均 0.3 ms | （不訂閱） |
+| 事件模式，owned window | 93 s | 0.61 s（0.65%） | 322 次，平均 14.0 ms，最長 203 ms | 32 次，平均 3.1 ms | 3 次 |
+| 停止回應測試，owned | 43 s | 0.16 s | 127 次，平均 12.2 ms | 16 次 | 1 次 |
+| 停止回應測試，不設 owner | 43 s | 0.19 s | 127 次，平均 15.7 ms | 23 次 | 0 次 |
+
+- 訂閱本身都成功：五次測試共 74 次訂閱，沒有失敗。
+- **`SelectionChanged`（DISPID 200）幾乎不來**：使用者點了很多次資料夾和檔案，每次測試只收到 0～3 次。同一段時間，標頭檔裡其他 DISPID（201、207、208、221）反而有來。在事件模式下，面板顯示的資料夾，幾乎都是換檢視後程式主動讀一次選取時才讀到的，例如按「上一頁」後檔案總管自動選回原本的資料夾。
+  - **結論：在 Windows 10 上，不能靠 `SelectionChanged` 得知選取改變**。208 沒有官方文件，不用。
+- **每 250 ms 讀選取的模式**：點資料夾會顯示，點檔案會隱藏，點選和換資料夾都抓得到。
+- **成本主要花在「檢查目前檢視」**，不是讀選取：每次都要重新列出 `IShellWindows`、跨行程走過 `QueryService` 和 `QueryActiveShellView`，平均 9～16 ms；讀選取只要 0.3 ms。只有檔案總管在前景時才檢查，總共約 0.4～0.65% 的單核心。
+- **有一次檢查卡了 1047 ms**，可能是檔案總管正在換資料夾。這些呼叫都在面板的執行緒上，卡住時面板也跟著不能動。
+- 檔案總管縮到最小時，看得見的檢視是 0 個，面板隱藏，行為正確。
+- **使用者回報**：
+  - 面板停止回應的 8 秒內，**兩種方式（owned、不設 owner）檔案總管都跟著卡住**。這兩次測試都訂閱了 `DShellFolderViewEvents`，也都有 WinEvent hook。
+    - 文件寫明 out-of-context 的 WinEvent 是排隊、非同步送達（SetWinEventHook、Out-of-Context Hook Functions）。
+    - COM 跨行程呼叫時，呼叫端會不會等對方回應，查到的文件（Single-Threaded Apartments）沒有明寫。
+    - 所以「是訂閱拖住檔案總管」只是推測。下一輪分成四種方式重測：不訂閱、不用 hook、owned、訂閱。
+  - 面板不是每次點資料夾都出現，每個步驟都這樣。使用者主要是在**左邊樹狀窗格**點資料夾；在那裡點是切換目前資料夾，不是選取，所以照原本的規則不會觸發。
+- **規則修正**（使用者確認）：切換資料夾時列出目前資料夾；在清單選一個資料夾就改列它；之後點檔案或空白處就隱藏。見 DESIGN-phase5.md 7.5、7.6。
+- 實測程式改版：
+  - 不再用事件，改成每 250 ms 讀一次選取；
+  - 記住目前的檢視，只在它不見或被隱藏時、以及每 2 秒一次，重新列出 `IShellWindows`；
+  - 加上 `--no-hooks`、`--subscribe` 選項，用來分辨卡住的原因；
+  - 測試腳本會在每步結束後提問，把回答存進結果檔。
+
+#### VM 實測第二輪：新規則與「誰拖住檔案總管」（2026-11-05）
+
+同一台 Windows 10 22H2 VM。使用者的回答由測試腳本存檔。
+
+| 測試 | 使用者回答 | CPU（本程式） | 重新列出檢視 | 讀選取 |
+|---|---|---|---|---|
+| 面板，不設 owner（90 s） | 每次都出現、內容正確；有貼在右邊，但**檔案總管靠近螢幕右邊緣時面板會消失** | 0.45 s（0.49%） | 40 次，平均 21 ms，最長 250 ms | 251 次，平均 4.9 ms，**最長 834 ms** |
+| 面板，owned（90 s） | 沒問題 | 0.16 s（0.17%） | 45 次，平均 11 ms | 344 次，平均 1.5 ms，最長 271 ms |
+
+面板停止回應 8 秒時，檔案總管會不會跟著卡住：
+
+| 方式 | 檔案總管卡住？ |
+|---|---|
+| 不設 owner，有 WinEvent hook，不訂閱 | 沒有 |
+| 不設 owner，不用 hook | 沒有 |
+| **owned window** | **有** |
+| 不設 owner，訂閱 `DShellFolderViewEvents`（事件不處理） | 沒有 |
+
+- **owned window 會拖住檔案總管**，兩輪都一樣。文件沒有說明擁有者在別的行程時的行為，這是實測結果。**決定：面板不設 owner**，自己依 WinEvent 事件跟著檔案總管。
+- 第一輪「不設 owner、有訂閱」的那次，使用者回報有卡住；這一輪同樣的組合沒有卡住。原因沒有查明。面板本來就不訂閱事件，所以不影響設計。
+- 讀選取偶爾會花幾百 ms（最長 834 ms），這時面板的執行緒也跟著停住。**正式前端要把跨行程的 COM 呼叫放到另一個執行緒**。
+- 右鍵選單：Windows 10 上，傳統登錄動詞直接出現在右鍵選單裡，點了之後會帶入資料夾路徑。Windows 11 還沒測。
+- **面板位置的修正**（使用者確認的順序）：右邊外側 → 左邊外側 → 內側右邊，而且一定在螢幕的工作區域內。貼在內側時會和檔案總管重疊，所以每次檢查時，如果檔案總管跑到面板上面，就把面板放回它上面。「靠近右邊緣會消失」的原因，紀錄裡看不出來，因為沒有記下 z-order。可能是貼在內側後被檔案總管蓋住，這只是推測。新版會記下位置和重新放回上面的次數。
+
+#### 實測第三輪：面板位置（VM）與 Windows 11（開發機）（2026-11-05）
+
+- **VM（Windows 10）面板位置**：使用者依序試了靠右邊緣、靠左邊緣、左右都放不下、最大化，回答四種情況面板都**沒有消失、也沒有被蓋住**。
+  - 紀錄裡依序出現右邊外側、左邊外側、內側右邊。
+  - 「把面板放回檔案總管上面」做了 4 次：貼在內側時，檔案總管確實會跑到面板上面。這證實了上一輪「被蓋住」的推測。
+  - CPU 0.45 s／91 s（0.49%）；讀選取平均 1.9 ms，最長 153 ms。
+- **開發機（Windows 11，build 26300）**，一般權限：
+  - 面板：每次都出現，內容正確；貼齊正常，不會閃爍。CPU 0.56 s／91 s（0.62%）；重新列出檢視平均 9.8 ms，讀選取平均 1.4 ms。
+  - **右鍵選單**：傳統登錄動詞出現在「顯示更多選項」裡，點了會帶入資料夾路徑。和依文件推論的一致。
+  - **分頁還沒測到**：這次是兩個視窗、各一個分頁，因為步驟 1 的提示寫的是開兩個視窗。測試腳本已補上分頁專用的步驟 7。
+- **Windows 11 分頁（開發機，步驟 7 與後續逐次讀取）**：
+  - 一個視窗開 3 個分頁時，`IShellWindows` 有 3 個項目，`get_HWND` 都是同一個頂層視窗。每個分頁各有一個 `ShellTabWindowClass` 的 `IShellBrowser` 視窗。
+  - **3 個分頁的檢視視窗都回報「看得見」**（`IsWindowVisible` 為 1）。位置、大小、樣式、是否啟用、`DWMWA_CLOAKED` 也都相同。所以原本「只有一個看得見」的判斷分不出來，照 7.2 隱藏，使用者回報「沒看到面板」。
+  - 唯一不同的是**在父視窗子視窗中的 z-order**。使用者依序把第 1、第 3、第 2 個分頁切到前面，每次讀取時，前面的分頁都是 3 個 `IShellBrowser` 視窗中 z-order 最上面的那個（3 次中 3 次），和視窗標題（「某資料夾 和 2 個其他索引標籤」）一致。
+  - **這是實測的行為，沒有文件**。實作方式：看得見的檢視不只一個時，選 z-order 最上面的分頁；如果這些分頁視窗不在同一個父視窗下，或找不到，就隱藏，不猜。每次檢查也會用不需要 COM 的方式確認前面的分頁有沒有換，換了就重新列出。
+  - **修正後重測（60 s）**：
+    - 使用者回答：切換分頁後，面板顯示的是那個分頁的資料夾；開新分頁、關分頁也都正常。
+    - 紀錄有 5 次前面分頁的變化。新分頁一開始是「本機」，不是檔案系統資料夾，面板隱藏。
+    - CPU 0.39 s／61 s（0.64%）；重新列出檢視平均 43 ms，最長 212 ms（3～4 個分頁）；讀選取平均 3 ms。
+    - 分頁越多，重新列出越慢，這部分正式前端也要放到另一個執行緒。
+- **第 5 階段實測的結論**：
+  - 面板用輪詢讀選取，不用事件；
+  - 不設 owner；
+  - 跨行程的 COM 呼叫放到另一個執行緒；
+  - 位置依序是右邊外側、左邊外側、內側；
+  - Windows 11 分頁用 z-order 判斷前面的分頁；
+  - 右鍵選單用傳統登錄動詞（Windows 10 直接出現，Windows 11 在「顯示更多選項」裡）。
+
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
 - 實測：`FSCTL_QUERY_FILE_LAYOUT` 在一般權限下無法使用（錯誤 1）；逐目錄掃描可以用，但讀不到部分資料夾。
@@ -917,6 +1042,51 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 第 4 階段實作 | [HandlerRoutine](https://learn.microsoft.com/en-us/windows/console/handlerroutine) |
 | 第 4 階段實作 | [SERVICE_PRESHUTDOWN_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_preshutdown_info) |
 | 第 4 階段實作 | [SERVICE_DESCRIPTIONW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_descriptionw) |
+| 第 5 階段設計 | [IShellWindows](https://learn.microsoft.com/en-us/windows/win32/api/exdisp/nn-exdisp-ishellwindows) |
+| 第 5 階段設計 | [IShellWindows::Item](https://learn.microsoft.com/en-us/windows/win32/api/exdisp/nf-exdisp-ishellwindows-item) |
+| 第 5 階段設計 | [IShellWindows::OnNavigate](https://learn.microsoft.com/en-us/windows/win32/api/exdisp/nf-exdisp-ishellwindows-onnavigate) |
+| 第 5 階段設計 | [ShellWindowTypeConstants](https://learn.microsoft.com/en-us/windows/win32/api/exdisp/ne-exdisp-shellwindowtypeconstants) |
+| 第 5 階段設計 | [DWebBrowserEvents2（IE，封存）](https://learn.microsoft.com/en-us/previous-versions/windows/internet-explorer/ie-developer/platform-apis/aa768283(v=vs.85)) |
+| 第 5 階段設計 | [NavigateComplete2（IE，封存）](https://learn.microsoft.com/en-us/previous-versions/windows/internet-explorer/ie-developer/platform-apis/aa768285(v=vs.85)) |
+| 第 5 階段設計 | [IWebBrowser2 HWND（IE，封存）](https://learn.microsoft.com/en-us/previous-versions/windows/internet-explorer/ie-developer/platform-apis/aa752126(v=vs.85)) |
+| 第 5 階段設計 | [IShellBrowser::QueryActiveShellView](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishellbrowser-queryactiveshellview) |
+| 第 5 階段設計 | [IFolderView::GetFolder](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ifolderview-getfolder) |
+| 第 5 階段設計 | [IPersistFolder2::GetCurFolder](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ipersistfolder2-getcurfolder) |
+| 第 5 階段設計 | [ShellFolderView](https://learn.microsoft.com/en-us/windows/win32/shell/shellfolderview) |
+| 第 5 階段設計 | [ShellFolderView.Folder](https://learn.microsoft.com/en-us/windows/win32/shell/shellfolderview-folder) |
+| 第 5 階段設計 | [ShellFolderView.SelectionChanged](https://learn.microsoft.com/en-us/windows/win32/shell/shellfolderview-selectionchanged) |
+| 第 5 階段設計 | [SetWinEventHook](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook) |
+| 第 5 階段設計 | [Event Constants](https://learn.microsoft.com/en-us/windows/win32/winauto/event-constants) |
+| 第 5 階段設計 | [SetWindowLongPtrW（GWLP_HWNDPARENT）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw) |
+| 第 5 階段設計 | [Window Features（Owned Windows）](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features) |
+| 第 5 階段設計 | [DWMWINDOWATTRIBUTE](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute) |
+| 第 5 階段設計 | [Context Menu Handlers](https://learn.microsoft.com/en-us/windows/win32/shell/context-menu-handlers) |
+| 第 5 階段設計 | [Integrate a packaged app with File Explorer](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/integrate-packaged-app-with-file-explorer) |
+| 第 5 階段設計 | [Grant package identity by packaging with external location](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps) |
+| 第 5 階段設計 | [Support Dark and Light themes in Win32 apps](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/ui/apply-windows-themes) |
+| 第 5 階段設計 | [High Contrast Parameter](https://learn.microsoft.com/en-us/windows/win32/winauto/high-contrast-parameter) |
+| 第 5 階段實測 | [SHGetNameFromIDList](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-shgetnamefromidlist) |
+| 第 5 階段實測 | [IOleWindow::GetWindow](https://learn.microsoft.com/en-us/windows/win32/api/oleidl/nf-oleidl-iolewindow-getwindow) |
+| 第 5 階段實測 | [IServiceProvider::QueryService](https://learn.microsoft.com/en-us/windows/win32/api/servprov/nf-servprov-iserviceprovider-queryservice(refguid_refiid_void)) |
+| 第 5 階段實測 | [DwmGetWindowAttribute](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmgetwindowattribute) |
+| 第 5 階段實測 | [SetProcessDpiAwarenessContext](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext) |
+| 第 5 階段實測 | [GetDpiForWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforwindow) |
+| 第 5 階段實測 | [GetWindow（GW_HWNDPREV、GW_OWNER）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindow) |
+| 第 5 階段實測 | [HKEY_CLASSES_ROOT（HKCU\Software\Classes 合併檢視）](https://learn.microsoft.com/en-us/windows/win32/sysinfo/hkey-classes-root-key) |
+| 第 5 階段實測 | [SHChangeNotify](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shchangenotify) |
+| 第 5 階段實測 | [IShellView::GetItemObject](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishellview-getitemobject) |
+| 第 5 階段實測 | [_SVGIO](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/ne-shobjidl_core-_svgio) |
+| 第 5 階段實測 | [IFolderView2::GetSelection](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ifolderview2-getselection) |
+| 第 5 階段實測 | [IShellFolderViewDual](https://learn.microsoft.com/en-us/windows/win32/api/shldisp/nn-shldisp-ishellfolderviewdual) |
+| 第 5 階段實測 | [IConnectionPointContainer::FindConnectionPoint](https://learn.microsoft.com/en-us/windows/win32/api/ocidl/nf-ocidl-iconnectionpointcontainer-findconnectionpoint) |
+| 第 5 階段實測 | [IConnectionPoint::Advise](https://learn.microsoft.com/en-us/windows/win32/api/ocidl/nf-ocidl-iconnectionpoint-advise) |
+| 第 5 階段實測 | [IShellItem::GetDisplayName](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishellitem-getdisplayname) |
+| 第 5 階段實測 | [Out-of-Context Hook Functions](https://learn.microsoft.com/en-us/windows/win32/winauto/out-of-context-hook-functions) |
+| 第 5 階段實測 | [In-Context and Out-of-Context Hook Functions](https://learn.microsoft.com/en-us/windows/win32/winauto/in-context-and-out-of-context-hook-functions) |
+| 第 5 階段實測 | [WinEvents overview](https://learn.microsoft.com/en-us/windows/win32/winauto/winevents-overview) |
+| 第 5 階段實測 | [Single-Threaded Apartments](https://learn.microsoft.com/en-us/windows/win32/com/single-threaded-apartments) |
+| 第 5 階段實測 | Windows SDK 10.0.26100.0 `um/shldisp.h`：`DShellFolderViewEvents`（`DIID_DShellFolderViewEvents`）；`um/shdispid.h`：`DISPID_SELECTIONCHANGED` |
+| 第 5 階段實測 | Windows SDK 10.0.26100.0 `um/shlguid.h`：`SID_STopLevelBrowser`、`SID_SShellBrowser` 的定義；`um/exdisp.h`：`CLSID_ShellWindows`、`SWC_EXPLORER` |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |

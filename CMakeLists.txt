@@ -77,6 +77,10 @@ target_link_libraries(usn-probe PRIVATE dirsize_core)
 add_executable(service-probe tools/service_probe.cpp)
 target_link_libraries(service-probe PRIVATE dirsize_core)
 
+# Phase 5 feasibility probe (measurement only, not shipped).
+add_executable(explorer-probe tools/explorer_probe.cpp)
+target_link_libraries(explorer-probe PRIVATE ole32 oleaut32 uuid shell32 dwmapi)
+
 # Unit tests (no elevation needed): ctest -C Release
 enable_testing()
 add_executable(core-tests tests/core_tests.cpp)
