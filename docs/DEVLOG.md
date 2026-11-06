@@ -1153,7 +1153,13 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - **缺字串不會改用另一種語言**：中文時 id 2 拿不到（回傳 0），英文時 id 3 拿不到。所以每種語言都要有全部字串，要加測試檢查。
   - 執行緒的設定**不會傳給新執行緒**（主執行緒設 en-US，新執行緒仍是中文）。`tree_loader` 在背景執行緒載入字串，所以要用 `SetProcessPreferredUILanguages`：設 en-US 後，主執行緒和新執行緒都拿到英文；執行緒自己再設 zh-TW 時，以執行緒的為準。
 - 文件：GetThreadPreferredUILanguages 的 MUI_MERGE_SYSTEM_FALLBACK 會傳回「corresponds exactly to the language list used by the resource loader」的清單，合併順序是執行緒 → 行程 → 使用者 → 系統預設（上面印的「merged」就是用這個旗標取得的）。SetProcessPreferredUILanguages：Windows 7 起，建議程式啟動後盡早呼叫，最多五種語言；頁面沒有提到 LoadString。
-- 結論（7.5 A 可行）：程式啟動時決定 zh-TW 或 en-US，用 `SetProcessPreferredUILanguages` 設定。還要在英文 Windows 上確認「不做設定」時拿到英文。
+- VM（Windows 顯示語言改成 English (United States)，系統預設 UI 語言仍是 zh-TW）的結果：
+  - 不做設定：拿到**英文**。
+  - 設 en-GB、ja-JP：拿到英文（照使用者的 en-US 退回）。
+  - 設 zh-HK：拿到**英文**。合併清單是 zh-HK;zh-Hant;zh;en-US…，「zh-Hant」「zh」都對不到 zh-TW 的字串表，和開發機上 en-GB 的情形一樣。
+  - 在主執行緒設 zh-TW 後，新執行緒仍是英文；設定整個程式時，新執行緒也照設定。
+- 結論（7.5 A 可行）：中性語言（en、zh-Hant）對不到有地區的字串表，所以不能只靠 Windows 自己選。程式啟動時讀使用者的偏好清單，自己對應成 zh-TW 或 en-US，再用 `SetProcessPreferredUILanguages` 設定。
+- 使用者決定：簡體中文（zh-CN、zh-SG）用英文，不用繁體。對應規則寫進設計第 5 節。
 - 參考：[SetProcessPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-setprocesspreferreduilanguages)、[GetThreadPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getthreadpreferreduilanguages)、[GetUserPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getuserpreferreduilanguages)。
 
 ### 2026-11-03 權限與部署方向（第 4 階段參考）

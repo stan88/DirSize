@@ -51,7 +51,10 @@
   - UI 語言管理的頁面寫了 MUI 檔案的語言選擇順序：執行緒偏好 → 行程偏好 → 使用者 UI 語言 → 系統 UI 語言 → 系統預設，但那是針對 `.mui` 語言檔寫的。
   - `SetThreadPreferredUILanguages` 的頁面寫明：設定之後，執行緒的偏好會優先於使用者的偏好，「Resource-loading functions, such as LoadString ... make calls to GetThreadPreferredUILanguages」。
   - 所以有兩條路，見 7.5。
-- **預設**：跟著 Windows 的顯示語言；不是中文就用英文。設定裡可以手動切換（「⋯」選單）。
+- **預設**：跟著 Windows 的顯示語言。設定裡可以手動切換（「⋯」選單）。
+  - 實測（DEVLOG 2026-11-06）：中性語言（en、zh-Hant）對不到有地區的字串表，例如 zh-HK 會拿到英文。所以程式自己選：依序看使用者的偏好清單，繁體中文（zh-TW、zh-HK、zh-MO、zh-Hant）用 zh-TW，英文（en-*）用 en-US，其他（包括簡體中文 zh-CN、zh-SG）跳過；都沒有就用 en-US。
+  - 選好後用 `SetProcessPreferredUILanguages` 設定，背景執行緒也會照這個語言。
+  - 每種語言都要有全部字串（缺的字串不會改用另一種語言），用測試檢查。
 - **範圍**：只翻譯介面（`dirsize.exe` 和安裝程式）。服務的記錄檔和 CLI 輸出維持英文，因為這些是給排查問題用的，不是給一般使用者看的。
 
 ## 6. 版本、簽章、發行
