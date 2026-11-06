@@ -4,7 +4,8 @@
 // (panel.cpp). docs/DESIGN-phase5.md sections 3 and 4.
 //
 //   dirsize.exe [folder]
-//   dirsize.exe --panel
+//   dirsize.exe --panel [--trace]
+//   dirsize.exe --check <folder> <output file>   (verification scripts)
 
 #include <windows.h>
 #include <unknwn.h>
@@ -16,7 +17,9 @@
 
 #include <shlobj.h>
 
+#include <cstdio>
 #include <memory>
+#include <share.h>
 #include <string>
 
 #include "app/panel.h"
@@ -108,7 +111,9 @@ private:
     void ShowListMenu(int index, POINT screen);
     void SetMoreHover(bool hover);
     int Scale(int dip) const { return MulDiv(dip, static_cast<int>(dpi_), 96); }
-    int HeaderHeight() const { return Scale(58); }
+    int HeaderHeight() const { return Scale(40); }  // the path and the "..." button
+    int StatusHeight() const { return Scale(28); }  // the status bar at the bottom
+    RECT StatusRect() const;
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
@@ -209,7 +214,14 @@ RECT MainWindow::SplitterRect() const {
     // The tree keeps at least 120 DIPs, the list at least 240 when possible.
     int width = std::min(Scale(treeWidthDip_), static_cast<int>(rc.right) - Scale(240 + kSplitterDip));
     width = std::max(width, Scale(120));
-    return RECT{width, HeaderHeight(), width + Scale(kSplitterDip), rc.bottom};
+    return RECT{width, HeaderHeight(), width + Scale(kSplitterDip), StatusRect().top};
+}
+
+RECT MainWindow::StatusRect() const {
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    const int top = std::max(static_cast<int>(rc.top) + HeaderHeight(), static_cast<int>(rc.bottom) - StatusHeight());
+    return RECT{rc.left, top, rc.right, rc.bottom};
 }
 
 void MainWindow::SetTreeWidth(int x) {
@@ -222,7 +234,7 @@ void MainWindow::Layout() {
     RECT rc;
     GetClientRect(hwnd_, &rc);
     const RECT split = SplitterRect();
-    const int height = std::max(0, static_cast<int>(rc.bottom) - HeaderHeight());
+    const int height = std::max(0, static_cast<int>(StatusRect().top) - HeaderHeight());
     if (tree_) MoveWindow(tree_->Window(), 0, HeaderHeight(), split.left, height, TRUE);
     if (list_) {
         MoveWindow(list_->Window(), split.right, HeaderHeight(), std::max(0, static_cast<int>(rc.right - split.right)),
@@ -260,8 +272,17 @@ void MainWindow::PaintHeader(HDC dc, const RECT& client) {
     SetTextColor(dc, moreHover_ && palette_.highContrast ? palette_.selectionText : palette_.text);
     RECT moreText = more;
     DrawTextW(dc, L"⋯", -1, &moreText, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    // The status bar at the bottom (the user asked for it there): the
+    // totals and the source on the left, the key hint on the right when
+    // there is room. Header background with a separator line on top.
     SelectObject(dc, font_);
-    RECT line2{pad, Scale(32), client.right - pad, Scale(54)};
+    RECT bar = StatusRect();
+    SetDCBrushColor(dc, palette_.headerBackground);
+    FillRect(dc, &bar, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    RECT sep{bar.left, bar.top, bar.right, bar.top + std::max(1, Scale(1))};
+    SetDCBrushColor(dc, palette_.line);
+    FillRect(dc, &sep, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    RECT line2{pad, bar.top + std::max(1, Scale(1)), client.right - pad, bar.bottom};
     SetTextColor(dc, palette_.secondaryText);
     std::wstring hint = Text(IDS_HINT);
     SIZE hs{};
@@ -616,12 +637,103 @@ std::wstring StartFolder() {
     return folder;
 }
 
+const wchar_t* NoteName(ServiceNote note) {
+    switch (note) {
+        case ServiceNote::None: return L"none";
+        case ServiceNote::Updating: return L"updating";
+        case ServiceNote::Starting: return L"starting";
+        case ServiceNote::NotRunning: return L"not-running";
+        case ServiceNote::NotInstalled: return L"not-installed";
+        case ServiceNote::NotIndexed: return L"not-indexed";
+        case ServiceNote::Indexing: return L"indexing";
+        case ServiceNote::NotLocal: return L"not-local";
+    }
+    return L"?";
+}
+
+const wchar_t* StatusName(LoadStatus s) {
+    switch (s) {
+        case LoadStatus::Ok: return L"ok";
+        case LoadStatus::NotFound: return L"not-found";
+        case LoadStatus::AccessDenied: return L"access-denied";
+        case LoadStatus::Failed: return L"failed";
+    }
+    return L"?";
+}
+
+// dirsize.exe --check <folder> <output file>
+// For the verification scripts (scripts/frontend-test.ps1): loads the folder
+// through the same FolderSource as the window, without a window, and
+// appends one line to the output file (UTF-8) with what the status line
+// would say: where the sizes came from and why. Exit code 0 when loaded.
+int RunCheck() {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv || argc < 4) {
+        if (argv) LocalFree(argv);
+        return 2;
+    }
+    const std::wstring folder = Normalize(PathFromArgument(argv[2]));
+    const std::wstring output = argv[3];
+    LocalFree(argv);
+
+    // A message-only window receives the result (FolderSource posts it).
+    struct Receiver {
+        static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+            if (m == kFolderLoaded) {
+                auto* slot = reinterpret_cast<std::unique_ptr<FolderResult>*>(GetWindowLongPtrW(h, GWLP_USERDATA));
+                slot->reset(reinterpret_cast<FolderResult*>(l));
+                PostQuitMessage(0);
+                return 0;
+            }
+            return DefWindowProcW(h, m, w, l);
+        }
+    };
+    WNDCLASSEXW wc{sizeof(wc)};
+    wc.lpfnWndProc = Receiver::Proc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"DirSizeCheck";
+    RegisterClassExW(&wc);
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, nullptr);
+    if (!hwnd) return 3;
+    std::unique_ptr<FolderResult> result;
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&result));
+    const ULONGLONG start = GetTickCount64();
+    {
+        FolderSource source(hwnd, kFolderLoaded);
+        source.Request(folder, false);
+        MSG msg;
+        while (GetMessageW(&msg, nullptr, 0, 0) > 0) DispatchMessageW(&msg);
+    }
+    const ULONGLONG elapsed = GetTickCount64() - start;
+    DestroyWindow(hwnd);
+    if (!result) return 4;
+
+    wchar_t when[32] = {};
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    swprintf_s(when, L"%04u-%02u-%02u %02u:%02u:%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    std::wstring line = std::wstring(when) + L" status=" + StatusName(result->status) +
+                        L" source=" + (result->fromService ? L"service" : L"walk") +
+                        L" note=" + NoteName(result->note) + L" folders=" + std::to_wstring(result->items.size()) +
+                        L" allocated=" + std::to_wstring(result->totalAllocated) +
+                        L" files=" + std::to_wstring(result->totalFiles) + L" ms=" + std::to_wstring(elapsed) +
+                        (result->status == LoadStatus::Failed ? L" error=" + std::to_wstring(result->error) : L"") +
+                        L"\n";
+    FILE* f = _wfsopen(output.c_str(), L"a, ccs=UTF-8", _SH_DENYNO);
+    if (!f) return 5;
+    fputws(line.c_str(), f);
+    fclose(f);
+    return result->status == LoadStatus::Ok ? 0 : 1;
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     // Single-threaded apartment: UISettings (Windows Runtime) and the folder
     // picker (COM) are used on this thread.
     winrt::init_apartment(winrt::apartment_type::single_threaded);
+    if (wcsstr(GetCommandLineW(), L"--check")) return RunCheck();
     if (wcsstr(GetCommandLineW(), L"--panel")) return RunPanel(instance);
     if (!MainWindow::Register(instance)) return 1;
     HWND hwnd = MainWindow::Create(instance, StartFolder());

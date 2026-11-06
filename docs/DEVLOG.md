@@ -962,6 +962,46 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - 取消勾選後，項目就消失；
   - 清單的右鍵選單每一項都正常。
   - 使用者問到 Windows 11 第一層選單。說明了需要 `IExplorerCommand` 加上簽章過的 sparse package，維持 7.3 的決定；如果之後要做，排到第 6 階段，跟安裝程式一起處理。
+- 33c9f8f commit 並 push。
+
+### 2026-11-06 第 5 階段驗證工具
+
+- **`dirsize.exe --check <資料夾> <輸出檔>`**：
+  - 走和視窗相同的 `FolderSource`，但不開視窗，結果由 message-only window 接收；
+  - 在輸出檔附加一行：status、source（service／walk）、note（none／updating／starting／not-running／not-installed／not-indexed／indexing／not-local）、子資料夾數、磁碟用量、檔案數、毫秒數；
+  - 狀態列畫在視窗上，腳本讀不到，有了這一行，「來源：DirSize 服務」「服務啟動中」「未安裝服務」就能自動判斷。
+  - 開發機（沒有安裝服務）：`source=walk note=not-installed`；不存在的資料夾回報 `status=not-found`，結束碼 1。
+- **`scripts/frontend-test.ps1`**：照設計第 8 節第 6 步的驗證引導，分成六部分：
+  - Theme：開著視窗切換淺色、深色、對比佈景主題，每一步截圖並記下回答；
+  - Dpi：記下視窗和面板的 `GetDpiForWindow`，並截圖；
+  - Service：執行中 → 停止 → 再啟動，記下要幾秒服務才回答；
+  - AfterBoot：登入後每 2 秒 `--check` 一次，直到服務回答；
+  - NotInstalled：先移除服務，檢查完再裝回去，會先問過才移除；
+  - Panel：每秒取樣面板行程的 CPU 時間、工作集、private bytes，以及 `Shell.Application.Windows().Count`，輸出成 CSV。
+  - 已知的限制：服務設成自動啟動，所以手動停止後，note 會是 `starting`。這和「延遲啟動還沒開始」從 SCM 分不出來，前端照設計顯示「服務啟動中」。
+- **`scripts/package-frontend-test.ps1`**：把 dirsize、dirsize-service、dirsize-cli 和腳本打包成 `dist\DirSize-frontend-test-*.zip`，附上中文步驟說明。
+
+#### 第一輪驗證結果（VM：Windows 10 22H2 build 19045，2026-11-06）
+
+| 項目 | 結果 |
+|---|---|
+| 服務執行中 | `source=service note=none`；使用者確認狀態列寫「來源：DirSize 服務」 ✓ |
+| 停止服務 | `source=walk note=starting`，和設計的預期相同（自動啟動的服務停止後，和「延遲啟動還沒開始」分不出來）；逐目錄掃描 C:\Windows 花了 36 秒 |
+| 再啟動 | 1 秒內服務就回答（有快取） ✓ |
+| 沒有安裝服務 | `source=walk note=not-installed`，使用者確認狀態列和大小都正確；之後服務裝回去，狀態是 Running ✓ |
+| 面板資源用量 | 185 秒內最多 9 個檔案總管檢視：CPU 531 ms（單一核心的 0.29%）；工作集最高 18 MB，private 3 MB；沒有跟丟、卡住、閃爍，檔案總管也沒有變慢 ✓ |
+| 主題 | 淺色、深色、對比佈景主題，以及切回原本的主題，都立刻跟著變；面板也一致 ✓。高對比截圖：只用系統顏色，「⋯」按鈕有外框 |
+| **開機後的延遲啟動** | **沒有量到**：腳本在開機後 200 秒才開始，服務已經在回答 |
+| **跨 DPI** | **沒有驗證到**：移動前後的 `GetDpiForWindow` 都是 168，視窗沒有換到縮放比例不同的螢幕 |
+
+- **觀察**：VM 的截圖裡，深色模式的標題列是深色的。可是 DWMWINDOWATTRIBUTE 頁寫 `DWMWA_USE_IMMERSIVE_DARK_MODE` 從 Windows 11 build 22000 起才支援，這台是 Windows 10 build 19045。這是實測結果，文件沒有寫；程式本來就是「呼叫失敗就忽略」，不受影響。
+- **補救**：
+  - 延遲啟動：新增 `-Parts ScheduleAfterBoot`，在 HKCU 的 `RunOnce` 登記下次登入時自動執行 AfterBoot。這樣一登入就開始記錄，不用手動搶時間。依「Run and RunOnce Registry Keys」：只執行一次，命令長度上限 260 字元，腳本會先檢查長度。
+  - 跨 DPI：要有兩個縮放比例不同的螢幕，或者在測試中途改縮放比例。
+- **使用者要求：狀態列移到視窗底部**。
+  - 上方只留路徑和「⋯」按鈕，高度從 58 DIP 降到 40 DIP；
+  - 底部新增 28 DIP 的狀態列：左邊是合計、來源和說明，右邊是按鍵提示（空間不夠就不顯示），背景用標題列的顏色，上緣有一條分隔線；
+  - 樹、清單、分隔線都在上方和底部之間。開發機截圖確認正常。
 
 ### 2026-11-05 第 5 階段決定與實測程式
 
@@ -1296,6 +1336,10 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 清單選單 | [SetMenuDefaultItem](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setmenudefaultitem) |
 | 清單選單 | [SHOpenFolderAndSelectItems](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shopenfolderandselectitems) |
 | 清單選單 | [ShellExecuteW（explore）](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew) |
+| 驗證工具 | [Run and RunOnce Registry Keys](https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys) |
+| 驗證工具 | [Message-Only Windows（HWND_MESSAGE）](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows) |
+| 驗證工具 | [GetDpiForWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforwindow) |
+| 驗證工具 | [PrintWindow（PW_RENDERFULLCONTENT）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-printwindow) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
