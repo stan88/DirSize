@@ -35,4 +35,12 @@ BEGIN
     IDS_HINT                "Enter 進入　Backspace 上一層　Tab 切換樹狀／清單　Ctrl+O 選擇資料夾　F5 重新整理"
     IDS_PICK_FOLDER         "選擇資料夾"
     IDS_DRIVE_LABEL         "%1 (%2)"
+    IDS_VERB_TEXT           "用 DirSize 開啟"
+    IDS_MENU_VERB           "加入檔案總管的右鍵選單（用 DirSize 開啟）"
+    IDS_MENU_PICK           "選擇資料夾…\tCtrl+O"
+    IDS_MENU_OPEN           "開啟"
+    IDS_MENU_EXPLORE        "在檔案總管開啟"
+    IDS_MENU_SHOW_FILE      "在檔案總管中顯示"
+    IDS_MENU_REFRESH        "重新整理\tF5"
+    IDS_ERR_VERB            "無法修改右鍵選單設定，錯誤碼 "
 END

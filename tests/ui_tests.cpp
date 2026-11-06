@@ -4,6 +4,7 @@
 // were settled in three VM rounds; these tests pin them.
 
 #include <windows.h>
+#include <shellapi.h>  // CommandLineToArgvW
 
 #include <cstdio>
 #include <string>
@@ -16,6 +17,7 @@
 #include "ui/placement.h"
 #include "ui/scroll_geometry.h"
 #include "ui/tree_model.h"
+#include "ui/verb_command.h"
 
 namespace {
 
@@ -331,6 +333,42 @@ void TestPanelRules() {
 
 using Paths = std::vector<std::wstring>;
 
+// Parses a command line the way the program's own start-up does.
+std::wstring FirstArgument(const std::wstring& commandLine) {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(commandLine.c_str(), &argc);
+    std::wstring arg = argv && argc >= 2 ? argv[1] : L"";
+    if (argv) LocalFree(argv);
+    return arg;
+}
+
+std::wstring Expand(std::wstring command, const std::wstring& path) {  // what Explorer does with %1
+    command.replace(command.find(L"%1"), 2, path);
+    return command;
+}
+
+void TestVerbCommand() {
+    const std::wstring exe = L"C:\\Program Files\\DirSize\\dirsize.exe";
+    const std::wstring command = VerbCommandLine(exe);
+    CHECK(command == L"\"C:\\Program Files\\DirSize\\dirsize.exe\" \"%1\"");
+
+    // Through the documented parsing rules (CommandLineToArgvW) and back.
+    auto roundTrip = [&](const std::wstring& path) {
+        return PathFromArgument(FirstArgument(Expand(command, path)));
+    };
+    CHECK(roundTrip(L"D:\\Some Folder") == L"D:\\Some Folder");
+    CHECK(roundTrip(L"C:\\Users") == L"C:\\Users");
+    CHECK(roundTrip(L"D:\\a b\\c d") == L"D:\\a b\\c d");
+    // A drive: "C:\" ends in backslash-quote, which the parser turns into
+    // a literal quotation mark.
+    CHECK(FirstArgument(Expand(command, L"C:\\")) == L"C:\"");
+    CHECK(roundTrip(L"C:\\") == L"C:\\");
+    CHECK(roundTrip(L"E:\\") == L"E:\\");
+    // Typed by hand: unchanged.
+    CHECK(PathFromArgument(L"C:\\Windows") == L"C:\\Windows");
+    CHECK(PathFromArgument(L"") == L"");
+}
+
 void TestTreePaths() {
     std::wstring root;
     std::vector<std::wstring> parts;
@@ -515,6 +553,7 @@ int main() {
     TestPlacement();
     TestPanelRules();
     TestScrollGeometry();
+    TestVerbCommand();
     TestTreePaths();
     TestTreeModel();
     TestTreeReveal();

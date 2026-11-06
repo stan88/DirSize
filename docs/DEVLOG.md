@@ -930,6 +930,38 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
     - 和以前不同的兩點，使用者確認都是預期的行為：
       - 焦點從樹狀窗格回到右邊時，檔案總管自動選回的資料夾會顯示在面板上；
       - 沒有選取時，焦點一回到右邊，面板就隱藏。
+- 9516bdb commit 並 push。
+
+### 2026-11-06 第 5 階段：右鍵選單與清單選單
+
+- **使用者決定**：
+  - 「加入檔案總管右鍵選單」的開關，放在路徑列右上角的「⋯」按鈕；
+  - 清單的右鍵選單（設計第 3 節）用系統選單，這次一起做。
+  - 系統彈出選單在深色模式下是淺色，要改成深色只有沒有文件的做法，所以接受選單是淺色。
+- **文件查證**（連結見參考資料）：
+  - 靜態動詞：`shell\<動詞>\command`，動詞機碼的預設值就是選單文字，`"%1"` 要加引號。文件說可以註冊在 `HKEY_CURRENT_USER\Software\Classes`，不需要提升權限。
+  - Predefined Shell Objects 表：`Directory`＝檔案資料夾，`Drive`＝「本機」裡的磁碟機（例如 "C:\"），`Directory\Background`＝資料夾裡的空白處。
+  - **找到的文件只說明了 `%1`**，`%V`、`%L` 都沒有說明。實測程式當初在資料夾空白處用的是 `%V`，VM 上可以用，但沒有文件依據。**所以這次不註冊資料夾空白處**，只註冊 `Directory` 和 `Drive`。
+  - 改完登錄要呼叫 `SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL)`；文件說不呼叫的話，可能要重新開機才會生效。
+  - **磁碟機的參數**：`%1` 是 `C:\`，加上引號後命令列是 `"C:\"`。依 CommandLineToArgvW 和 C 執行階段的解析規則，奇數個反斜線後面接引號，引號會被當成字面字元，所以程式收到的是 `C:"`。路徑不可能含有引號，所以程式把結尾的引號換回反斜線（`PathFromArgument`）。單元測試用 `CommandLineToArgvW` 實際解析來驗證；開發機也實際用 `"C:\"` 啟動，確認會開到 C:\。
+- **實作**：
+  - `shell_verb`：在 `Directory\shell\DirSize` 和 `Drive\shell\DirSize` 寫入選單文字和 `command`。註冊到一半失敗時，把已經寫入的刪掉，不留下一半的設定。移除時用 `RegDeleteTreeW`，再用 `RegDeleteKeyW` 刪機碼本身。
+  - 「⋯」按鈕：自己畫，滑鼠移上去有底色，高對比時加外框。選單裡有可勾選的「加入檔案總管的右鍵選單」，還有「選擇資料夾…」。改登錄失敗時，狀態列會顯示錯誤碼。
+  - 清單的右鍵選單：
+    - 資料夾：「開啟」（預設項目，和雙擊一樣）、「在檔案總管開啟」（`ShellExecuteW` 的 `explore`）；
+    - 檔案：「在檔案總管中顯示」（`SHOpenFolderAndSelectItems`，會選取那個檔案）；
+    - 空白處：「在檔案總管開啟」目前資料夾；
+    - 每一種都有「重新整理」。
+    - Shift+F10 或選單鍵會在選取的那一列開啟選單；這時 `WM_CONTEXTMENU` 的座標是 -1，依文件處理。
+    - 選單開著的時候，訊息照樣會被處理，清單可能在這段時間重新載入。所以開選單前，先把目標路徑複製下來。
+  - 面板的清單收到右鍵時，同樣會通知父視窗，但面板不處理這個通知。
+- ui-tests 220 → 229 項，全部通過。新增的測試涵蓋命令列格式、經過 `CommandLineToArgvW` 解析後再換回路徑，包括磁碟機根目錄和含空白的路徑。
+- **使用者在開發機（Windows 11）實測，全部正常**：
+  - 用「⋯」勾選後，資料夾和磁碟機的右鍵選單都有「用 DirSize 開啟」，在「顯示更多選項」裡面，和設計 7.3 預期的一樣；
+  - 磁碟機會開到正確的根目錄；
+  - 取消勾選後，項目就消失；
+  - 清單的右鍵選單每一項都正常。
+  - 使用者問到 Windows 11 第一層選單。說明了需要 `IExplorerCommand` 加上簽章過的 sparse package，維持 7.3 的決定；如果之後要做，排到第 6 階段，跟安裝程式一起處理。
 
 ### 2026-11-05 第 5 階段決定與實測程式
 
@@ -1251,6 +1283,19 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 面板規則 | [GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getguithreadinfo) |
 | 面板規則 | [GUITHREADINFO（hwndFocus）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo) |
 | 面板規則 | [About Tree-View Controls（WC_TREEVIEW = "SysTreeView32"）](https://learn.microsoft.com/en-us/windows/win32/controls/tree-view-controls) |
+| 右鍵選單 | [Verbs and File Associations](https://learn.microsoft.com/en-us/windows/win32/shell/fa-verbs) |
+| 右鍵選單 | [Creating Shortcut Menu Handlers（HKCU\Software\Classes 不需提升權限）](https://learn.microsoft.com/en-us/windows/win32/shell/context-menu-handlers) |
+| 右鍵選單 | [Shell Extension Handlers（Predefined Shell Objects：Directory、Directory\Background、Drive）](https://learn.microsoft.com/en-us/windows/win32/shell/handlers) |
+| 右鍵選單 | [SHChangeNotify（SHCNE_ASSOCCHANGED）](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shchangenotify) |
+| 右鍵選單 | [CommandLineToArgvW（反斜線與引號的規則）](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw) |
+| 右鍵選單 | [Parsing C command-line arguments](https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments) |
+| 右鍵選單 | [RegSetKeyValueW](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regsetkeyvaluew) |
+| 右鍵選單 | [RegDeleteTreeW](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regdeletetreew) |
+| 清單選單 | [WM_CONTEXTMENU（鍵盤開啟時座標為 -1）](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-contextmenu) |
+| 清單選單 | [TrackPopupMenu（TPM_RETURNCMD）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-trackpopupmenu) |
+| 清單選單 | [SetMenuDefaultItem](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setmenudefaultitem) |
+| 清單選單 | [SHOpenFolderAndSelectItems](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shopenfolderandselectitems) |
+| 清單選單 | [ShellExecuteW（explore）](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |

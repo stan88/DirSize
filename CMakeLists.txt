@@ -67,6 +67,7 @@ add_library(dirsize_ui_core STATIC
     src/ui/panel_rules.cpp
     src/ui/tree_model.cpp
     src/ui/scroll_geometry.cpp
+    src/ui/verb_command.cpp
 )
 target_include_directories(dirsize_ui_core PUBLIC src)
 
@@ -76,6 +77,7 @@ add_library(dirsize_ui STATIC
     src/ui/theme.cpp
     src/ui/size_list.cpp
     src/ui/scroll_strip.cpp
+    src/ui/shell_verb.cpp
     src/ui/tree_loader.cpp
     src/ui/folder_tree.cpp
     src/ui/folder_source.cpp
@@ -122,5 +124,5 @@ add_executable(service-tests tests/service_tests.cpp)
 target_link_libraries(service-tests PRIVATE dirsize_service)
 add_test(NAME service-tests COMMAND service-tests)
 add_executable(ui-tests tests/ui_tests.cpp)
-target_link_libraries(ui-tests PRIVATE dirsize_ui_core)
+target_link_libraries(ui-tests PRIVATE dirsize_ui_core shell32)
 add_test(NAME ui-tests COMMAND ui-tests)

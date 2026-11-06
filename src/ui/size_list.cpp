@@ -486,6 +486,28 @@ LRESULT SizeList::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (parent != HTCLIENT && parent != HTNOWHERE && parent != HTERROR) return HTTRANSPARENT;
             break;
         }
+        case WM_CONTEXTMENU: {
+            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            int index = -1;
+            if (pt.x == -1 && pt.y == -1) {
+                // From the keyboard (Shift+F10, menu key): at the selected
+                // row, or the top of the list (WM_CONTEXTMENU documentation).
+                index = selected_;
+                int y = headerHeight_;
+                if (index >= 0 && index >= top_ && index < top_ + VisibleRows()) y += (index - top_) * rowHeight_;
+                pt = POINT{Scale(24), y + rowHeight_ / 2};
+                ClientToScreen(hwnd_, &pt);
+            } else {
+                POINT client = pt;
+                ScreenToClient(hwnd_, &client);
+                RECT content = ContentRect();
+                if (client.x >= content.right) return 0;  // over the scroll bar
+                index = HitRow(client.y);
+                if (index >= 0) Select(index, false);
+            }
+            PostMessageW(parent_, kListContextMenu, static_cast<WPARAM>(index), MAKELPARAM(pt.x, pt.y));
+            return 0;
+        }
         case WM_GETDLGCODE:
             return DLGC_WANTARROWS | DLGC_WANTCHARS;
         case WM_KEYDOWN: {

@@ -30,3 +30,11 @@
 #define IDS_HINT                170
 #define IDS_PICK_FOLDER         171
 #define IDS_DRIVE_LABEL         180
+#define IDS_VERB_TEXT           181
+#define IDS_MENU_VERB           190
+#define IDS_MENU_PICK           191
+#define IDS_MENU_OPEN           192
+#define IDS_MENU_EXPLORE        193
+#define IDS_MENU_SHOW_FILE      194
+#define IDS_MENU_REFRESH        195
+#define IDS_ERR_VERB            196

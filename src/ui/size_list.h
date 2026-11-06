@@ -19,6 +19,9 @@ namespace dirsize::ui {
 // Posted to the parent window.
 constexpr UINT kListOpenItem = WM_APP + 200;  // wParam: index into Items() (double-click, Enter)
 constexpr UINT kListGoUp = WM_APP + 201;      // Backspace
+// Right-click or the menu key: wParam = row index or (WPARAM)-1 for none
+// (the row is selected first); lParam = screen point (GET_X/Y_LPARAM).
+constexpr UINT kListContextMenu = WM_APP + 202;
 
 class SizeList {
 public:

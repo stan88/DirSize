@@ -14,6 +14,8 @@
 #include <winrt/base.h>
 #include <wrl/client.h>
 
+#include <shlobj.h>
+
 #include <memory>
 #include <string>
 
@@ -21,9 +23,11 @@
 #include "ui/folder_source.h"
 #include "ui/folder_tree.h"
 #include "ui/format.h"
+#include "ui/shell_verb.h"
 #include "ui/size_list.h"
 #include "ui/strings.h"
 #include "ui/theme.h"
+#include "ui/verb_command.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace dirsize::ui;
@@ -37,6 +41,12 @@ constexpr WORD kCmdRefresh = 1;
 constexpr WORD kCmdPick = 2;
 constexpr WORD kCmdUp = 3;
 constexpr WORD kCmdNextPane = 4;  // Tab, Shift+Tab
+// Popup menu items (TrackPopupMenu with TPM_RETURNCMD).
+constexpr UINT kMenuVerb = 100;
+constexpr UINT kMenuPick = 101;
+constexpr UINT kMenuOpen = 102;
+constexpr UINT kMenuExplore = 103;
+constexpr UINT kMenuRefresh = 104;
 constexpr int kTreeWidthDip = 260;
 constexpr int kSplitterDip = 6;
 
@@ -93,6 +103,10 @@ private:
     void SetTreeWidth(int x);
     void OnLoaded(std::unique_ptr<FolderResult> r);
     void PickFolder();
+    RECT MoreButtonRect() const;  // the "..." button at the right of the path
+    void ShowSettingsMenu();
+    void ShowListMenu(int index, POINT screen);
+    void SetMoreHover(bool hover);
     int Scale(int dip) const { return MulDiv(dip, static_cast<int>(dpi_), 96); }
     int HeaderHeight() const { return Scale(58); }
 
@@ -103,6 +117,7 @@ private:
     HWND lastFocus_ = nullptr;  // the pane that gets the focus back on activation
     int treeWidthDip_ = kTreeWidthDip;
     bool dragging_ = false;     // moving the splitter
+    bool moreHover_ = false;    // mouse over the "..." button
     ThemeWatcher theme_;
     Palette palette_;
     std::unique_ptr<FolderSource> source_;
@@ -221,10 +236,30 @@ void MainWindow::PaintHeader(HDC dc, const RECT& client) {
     FillRect(dc, &header, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
     SetBkMode(dc, TRANSPARENT);
     const int pad = Scale(12);
-    RECT line1{pad, Scale(6), client.right - pad, Scale(32)};
+    const RECT more = MoreButtonRect();
+    RECT line1{pad, Scale(6), more.left - pad, Scale(32)};
     HGDIOBJ old = SelectObject(dc, titleFont_);
     SetTextColor(dc, palette_.text);
     DrawTextW(dc, path_.c_str(), -1, &line1, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS | DT_NOPREFIX);
+
+    // The "..." button (settings menu): drawn with the palette, a hover
+    // background, and an outline in high contrast so it reads as a button.
+    if (moreHover_) {
+        SetDCBrushColor(dc, palette_.highContrast ? palette_.selection : palette_.headerBackground);
+        FillRect(dc, &more, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    }
+    if (palette_.highContrast) {
+        HPEN pen = CreatePen(PS_SOLID, 1, palette_.text);
+        HGDIOBJ op = SelectObject(dc, pen);
+        HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Rectangle(dc, more.left, more.top, more.right, more.bottom);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(pen);
+    }
+    SetTextColor(dc, moreHover_ && palette_.highContrast ? palette_.selectionText : palette_.text);
+    RECT moreText = more;
+    DrawTextW(dc, L"⋯", -1, &moreText, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
     SelectObject(dc, font_);
     RECT line2{pad, Scale(32), client.right - pad, Scale(54)};
     SetTextColor(dc, palette_.secondaryText);
@@ -247,6 +282,99 @@ void MainWindow::PaintHeader(HDC dc, const RECT& client) {
     RECT line{mid, split.top, mid + std::max(1, Scale(1)), split.bottom};
     SetDCBrushColor(dc, palette_.line);
     FillRect(dc, &line, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+}
+
+RECT MainWindow::MoreButtonRect() const {
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    const int size = Scale(30), pad = Scale(8);
+    return RECT{rc.right - pad - size, Scale(4), rc.right - pad, Scale(4) + size};
+}
+
+void MainWindow::SetMoreHover(bool hover) {
+    if (hover == moreHover_) return;
+    moreHover_ = hover;
+    if (hover) {
+        TRACKMOUSEEVENT tme{sizeof(tme)};
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = hwnd_;
+        TrackMouseEvent(&tme);
+    }
+    RECT r = MoreButtonRect();
+    InvalidateRect(hwnd_, &r, FALSE);
+}
+
+// The settings menu of the "..." button. System popup menus stay light in
+// dark mode (only an undocumented way changes that); accepted for menus.
+void MainWindow::ShowSettingsMenu() {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    const bool installed = IsShellVerbInstalled();
+    AppendMenuW(menu, MF_STRING | (installed ? MF_CHECKED : MF_UNCHECKED), kMenuVerb, Text(IDS_MENU_VERB).c_str());
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kMenuPick, Text(IDS_MENU_PICK).c_str());
+    RECT more = MoreButtonRect();
+    POINT pt{more.right, more.bottom};
+    ClientToScreen(hwnd_, &pt);
+    UINT cmd = static_cast<UINT>(
+        TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_,
+                       nullptr));
+    DestroyMenu(menu);
+    SetMoreHover(false);
+    if (cmd == kMenuVerb) {
+        DWORD error = installed ? RemoveShellVerb() : InstallShellVerb();
+        if (error != ERROR_SUCCESS) {
+            status_ = Text(IDS_ERR_VERB) + std::to_wstring(error);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+    } else if (cmd == kMenuPick) {
+        PickFolder();
+    }
+}
+
+// Right-click on the list: open / show in Explorer / refresh.
+void MainWindow::ShowListMenu(int index, POINT screen) {
+    if (!list_) return;
+    const auto& items = list_->Items();
+    const ListItem* item = index >= 0 && index < static_cast<int>(items.size()) ? &items[index] : nullptr;
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    if (item && item->isFolder) {
+        AppendMenuW(menu, MF_STRING, kMenuOpen, Text(IDS_MENU_OPEN).c_str());
+        SetMenuDefaultItem(menu, kMenuOpen, FALSE);  // as double-click
+        AppendMenuW(menu, MF_STRING, kMenuExplore, Text(IDS_MENU_EXPLORE).c_str());
+    } else if (item) {
+        AppendMenuW(menu, MF_STRING, kMenuExplore, Text(IDS_MENU_SHOW_FILE).c_str());
+    } else {
+        AppendMenuW(menu, MF_STRING, kMenuExplore, Text(IDS_MENU_EXPLORE).c_str());  // the current folder
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kMenuRefresh, Text(IDS_MENU_REFRESH).c_str());
+    // Copied before the menu runs: its modal loop dispatches messages, and
+    // a load finishing then replaces the list's items.
+    const std::wstring target = item ? Join(path_, item->name) : path_;
+    const bool targetIsFolder = !item || item->isFolder;
+    item = nullptr;
+    UINT cmd = static_cast<UINT>(
+        TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y, 0, hwnd_, nullptr));
+    DestroyMenu(menu);
+    switch (cmd) {
+        case kMenuOpen:
+            Navigate(target, false);
+            break;
+        case kMenuExplore:
+            if (targetIsFolder) {
+                ShellExecuteW(hwnd_, L"explore", target.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            } else if (PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(target.c_str())) {
+                // Opens the folder with the file selected.
+                SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+                ILFree(pidl);
+            }
+            break;
+        case kMenuRefresh:
+            Navigate(path_, true);
+            break;
+    }
 }
 
 void MainWindow::Navigate(const std::wstring& path, bool refresh, bool fromTree) {
@@ -369,6 +497,11 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_LBUTTONDOWN: {
             POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            RECT more = MoreButtonRect();
+            if (PtInRect(&more, pt)) {
+                ShowSettingsMenu();
+                return 0;
+            }
             RECT split = SplitterRect();
             if (PtInRect(&split, pt)) {
                 dragging_ = true;
@@ -376,18 +509,34 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
-        case WM_MOUSEMOVE:
-            if (dragging_) SetTreeWidth(GET_X_LPARAM(lp) - Scale(kSplitterDip) / 2);
+        case WM_MOUSEMOVE: {
+            if (dragging_) {
+                SetTreeWidth(GET_X_LPARAM(lp) - Scale(kSplitterDip) / 2);
+                return 0;
+            }
+            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            RECT more = MoreButtonRect();
+            SetMoreHover(PtInRect(&more, pt) != FALSE);
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+            SetMoreHover(false);
             return 0;
         case WM_CAPTURECHANGED:
             dragging_ = false;
             return 0;
-        case WM_LBUTTONUP:
+        case WM_LBUTTONUP: {
             if (dragging_) {
                 ReleaseCapture();  // WM_CAPTURECHANGED clears dragging_
                 return 0;
             }
-            if (GET_Y_LPARAM(lp) < Scale(32)) PickFolder();  // click on the path
+            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            RECT more = MoreButtonRect();
+            if (pt.y < Scale(32) && pt.x < more.left) PickFolder();  // click on the path
+            return 0;
+        }
+        case kListContextMenu:
+            ShowListMenu(static_cast<int>(wp), POINT{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
             return 0;
         case WM_ACTIVATE:
             if (LOWORD(wp) == WA_INACTIVE) {
@@ -456,7 +605,8 @@ std::wstring StartFolder() {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     std::wstring folder;
-    if (argv && argc >= 2) folder = argv[1];
+    // From the Explorer verb a drive arrives as C:" (verb_command.h).
+    if (argv && argc >= 2) folder = PathFromArgument(argv[1]);
     if (argv) LocalFree(argv);
     if (folder.empty()) {
         wchar_t windows[MAX_PATH] = {};
