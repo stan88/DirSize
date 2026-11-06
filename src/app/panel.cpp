@@ -249,6 +249,13 @@ void Panel::OnExplorer(std::unique_ptr<ExplorerUpdate> u) {
 
 void Panel::OnLoaded(std::unique_ptr<FolderResult> r) {
     if (r->request != request_ || !list_) return;
+    if (r->walking) {  // interim: why the service did not answer; the result follows
+        std::wstring note = NoteText(r->note);
+        list_->SetMessage(Text(IDS_WALKING));
+        status_ = note.empty() ? Text(IDS_WALKING) : note;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
     switch (r->status) {
         case LoadStatus::NotFound:
             list_->SetMessage(Text(IDS_ERR_NOT_FOUND));

@@ -35,6 +35,11 @@ enum class ServiceNote {
 struct FolderResult {
     std::uint64_t request = 0;
     std::wstring path;
+    // An interim notice, not the result: the service could not answer
+    // (`note` says why) and a walk has started; the result follows. Lets
+    // the window say "service starting, walking" during the walk instead of
+    // only after it (VM test: the first walk of C:\Windows took 29 s).
+    bool walking = false;
     LoadStatus status = LoadStatus::Ok;
     unsigned long error = 0;  // Win32 error for Failed
     bool fromService = false;

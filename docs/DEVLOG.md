@@ -1002,6 +1002,30 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - 上方只留路徑和「⋯」按鈕，高度從 58 DIP 降到 40 DIP；
   - 底部新增 28 DIP 的狀態列：左邊是合計、來源和說明，右邊是按鍵提示（空間不夠就不顯示），背景用標題列的顏色，上緣有一條分隔線；
   - 樹、清單、分隔線都在上方和底部之間。開發機截圖確認正常。
+- 86952ff commit。
+
+#### 第二輪：開機後的延遲啟動（VM，用 ScheduleAfterBoot，2026-11-06）
+
+- 登入後第 36 秒開始記錄。服務回答之前，每次 `--check` 都是 `source=walk note=starting`；開機後 136 秒服務開始回答，之後都是 `source=service note=none` ✓。
+- **發現的問題**：第一張截圖裡，狀態列和清單只寫「讀取中…」。要等逐目錄掃描做完（第一次 29 秒，之後每次約 5 秒），才會顯示「服務啟動中，先逐目錄掃描」。設計第 2 節是要在掃描期間就說明原因，`IDS_WALKING`（「逐目錄掃描中…」）字串也早就有，只是程式沒用到。
+  - **修正**：`FolderSource` 決定改成逐目錄掃描時，先送一個 `walking=true` 的通知，最後結果之後才到。
+    - 獨立視窗：狀態列馬上顯示原因加上「逐目錄掃描中…」，清單顯示「逐目錄掃描中…」；重新整理時原本的清單內容保留；
+    - 面板也一樣處理；
+    - `--check` 跳過這個通知、等最後結果，並在輸出多記一欄 `walk-notice=N`。
+  - 開發機（沒有安裝服務）：`--check` 輸出 `walk-notice=1`。用 C:\Windows 啟動 1.5 秒後截圖，狀態列寫「未安裝服務，改為逐目錄掃描 · 逐目錄掃描中…」。
+- **觀察：不同權限時，逐目錄掃描和服務的差距**：
+  - 這次腳本用一般權限執行，掃描 C:\Windows 得到 19.06 GB、202,536 個檔案，服務是 20.76 GB、203,955 個；
+  - 第一輪用系統管理員執行時，兩者幾乎一樣（20.57 GB）。
+  - 所以差距來自一般使用者讀不到的資料夾：逐目錄掃描算不到，服務依 8.1 會算進去。這是改用逐目錄掃描時的已知限制。
+
+#### 第二輪：跨 DPI（開發機，Windows 11，2026-11-06）
+
+- 開發機的兩個螢幕原本都是 175%。使用者把其中一個改成 100% 後執行 `-Parts Dpi`：視窗的 DPI 從 168 變成 96 ✓。
+  - 移動後的截圖：字、列高、圖示、樹的縮排、捲軸、狀態列都一起換算成 100%，沒有模糊，也沒有被切掉；
+  - 面板：使用者確認貼在檔案總管旁邊，大小和字都正確 ✓；
+  - 視窗那一題，使用者回答了 n，事後確認是按錯了。
+- **腳本的截圖問題**：在另一個 DPI 的螢幕上截圖，右邊和下面會多出白邊。原因是腳本用 `SetProcessDPIAware`，屬於「系統 DPI 感知」，量到的視窗大小被放大了 168/96 倍。改成 `SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)`，失敗時才退回原本的做法。
+- 到這裡，第 5 階段第 8 節第 6 步的驗證項目都做完了。
 
 ### 2026-11-05 第 5 階段決定與實測程式
 
@@ -1340,6 +1364,7 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 驗證工具 | [Message-Only Windows（HWND_MESSAGE）](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows) |
 | 驗證工具 | [GetDpiForWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforwindow) |
 | 驗證工具 | [PrintWindow（PW_RENDERFULLCONTENT）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-printwindow) |
+| 驗證工具 | [SetProcessDpiAwarenessContext](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |

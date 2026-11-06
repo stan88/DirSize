@@ -224,6 +224,13 @@ void Worker(std::shared_ptr<FolderSource::State> s) {
             r->totalLogical = r->totalAllocated = r->totalFiles = 0;
             r->status = LoadStatus::Ok;
             r->note = note;
+            auto notice = std::make_unique<FolderResult>();
+            notice->request = request;
+            notice->path = path;
+            notice->walking = true;
+            notice->note = note;
+            FolderResult* rawNotice = notice.release();
+            if (!PostMessageW(s->notify, s->message, 0, reinterpret_cast<LPARAM>(rawNotice))) delete rawNotice;
             final = LoadByWalking(path, *r, s->cancel);
         }
         if (!final || s->cancel) continue;  // cancelled: a newer request is waiting

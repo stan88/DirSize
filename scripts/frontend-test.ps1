@@ -68,6 +68,7 @@ using System.Runtime.InteropServices;
 public static class FtWin {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
@@ -75,7 +76,10 @@ public static class FtWin {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
 }
 "@
-[FtWin]::SetProcessDPIAware() | Out-Null  # screenshots in physical pixels
+# Screenshots in physical pixels on every monitor: per-monitor aware v2
+# (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4). "System aware" got
+# window sizes scaled for monitors with another DPI (white margins).
+if (-not [FtWin]::SetProcessDpiAwarenessContext([IntPtr]-4)) { [FtWin]::SetProcessDPIAware() | Out-Null }
 
 function Ask([string]$part, [string]$question) {
     $a = Read-Host "  $question"

@@ -418,6 +418,15 @@ void MainWindow::Navigate(const std::wstring& path, bool refresh, bool fromTree)
 
 void MainWindow::OnLoaded(std::unique_ptr<FolderResult> r) {
     if (r->request != request_ || !list_) return;  // an older request
+    if (r->walking) {
+        // Interim: the service did not answer and a walk is under way. Say
+        // why now (design section 2); the rows stay on a refresh.
+        std::wstring note = NoteText(r->note);
+        status_ = note.empty() ? Text(IDS_WALKING) : note + L"  ·  " + Text(IDS_WALKING);
+        list_->SetMessage(Text(IDS_WALKING));
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
     switch (r->status) {
         case LoadStatus::NotFound:
             list_->SetItems({}, 0, false);
@@ -666,6 +675,8 @@ const wchar_t* StatusName(LoadStatus s) {
 // through the same FolderSource as the window, without a window, and
 // appends one line to the output file (UTF-8) with what the status line
 // would say: where the sizes came from and why. Exit code 0 when loaded.
+int g_checkWalkNotices = 0;  // --check: interim "walking" notices seen
+
 int RunCheck() {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -682,7 +693,12 @@ int RunCheck() {
         static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (m == kFolderLoaded) {
                 auto* slot = reinterpret_cast<std::unique_ptr<FolderResult>*>(GetWindowLongPtrW(h, GWLP_USERDATA));
-                slot->reset(reinterpret_cast<FolderResult*>(l));
+                std::unique_ptr<FolderResult> r(reinterpret_cast<FolderResult*>(l));
+                if (r->walking) {
+                    g_checkWalkNotices++;  // interim notice; the result follows
+                    return 0;
+                }
+                *slot = std::move(r);
                 PostQuitMessage(0);
                 return 0;
             }
@@ -718,6 +734,7 @@ int RunCheck() {
                         L" note=" + NoteName(result->note) + L" folders=" + std::to_wstring(result->items.size()) +
                         L" allocated=" + std::to_wstring(result->totalAllocated) +
                         L" files=" + std::to_wstring(result->totalFiles) + L" ms=" + std::to_wstring(elapsed) +
+                        L" walk-notice=" + std::to_wstring(g_checkWalkNotices) +
                         (result->status == LoadStatus::Failed ? L" error=" + std::to_wstring(result->error) : L"") +
                         L"\n";
     FILE* f = _wfsopen(output.c_str(), L"a, ccs=UTF-8", _SH_DENYNO);
