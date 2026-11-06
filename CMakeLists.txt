@@ -112,6 +112,9 @@ target_link_libraries(service-probe PRIVATE dirsize_core)
 add_executable(explorer-probe tools/explorer_probe.cpp)
 target_link_libraries(explorer-probe PRIVATE ole32 oleaut32 uuid shell32 dwmapi)
 
+# Phase 6 feasibility probe (measurement only, not shipped).
+add_executable(lang-probe tools/lang_probe.cpp tools/lang_probe.rc)
+
 # Unit tests (no elevation needed): ctest -C Release
 enable_testing()
 add_executable(core-tests tests/core_tests.cpp)

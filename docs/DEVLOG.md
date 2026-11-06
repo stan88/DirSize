@@ -1141,6 +1141,21 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - SmartScreen：沒有信譽的檔案會顯示警告。UAC：沒有簽章的程式，提升權限的提示框是黃色背景。
 - 使用者同意 7.1～7.6 都照建議：Inno Setup；右鍵選單由安裝程式寫 HKLM、面板自動啟動由程式寫 HKCU；先不簽章；移除時刪除快取；字串表放同一個 exe（先實測）；這個階段不做 Windows 11 第一層選單。
 
+### 2026-11-06 第 6 階段實測：字串表的語言選擇（`tools/lang_probe.cpp`）
+
+- 7.1～7.6 定案，7daf46e push。
+- 實測程式：同一個 exe 放 zh-TW 和 en-US 兩份字串表；id 1 兩種都有，id 2 只有英文，id 3 只有中文。原始輸出在 `bench-results/`。
+- 開發機（繁中 Windows 11，使用者 UI 語言 zh-TW，偏好清單 zh-TW;en-US）的結果：
+  - 不做設定：拿到中文。
+  - `SetThreadPreferredUILanguages` 設 en-US：拿到英文；設 zh-TW：拿到中文。清除設定後回到中文。**LoadString 確實照執行緒的偏好清單選**，和文件說的一致。
+  - 設 ja-JP;en-US：第一個沒有，就拿第二個（英文）。
+  - 設 en-GB：拿到**中文**，不是英文。合併後的清單是 en-GB;en;zh-TW…，「en」對不到 en-US 的字串表。所以**字串表的語言要完全相符**，程式要自己把語言對應成 zh-TW 或 en-US 再設定。
+  - **缺字串不會改用另一種語言**：中文時 id 2 拿不到（回傳 0），英文時 id 3 拿不到。所以每種語言都要有全部字串，要加測試檢查。
+  - 執行緒的設定**不會傳給新執行緒**（主執行緒設 en-US，新執行緒仍是中文）。`tree_loader` 在背景執行緒載入字串，所以要用 `SetProcessPreferredUILanguages`：設 en-US 後，主執行緒和新執行緒都拿到英文；執行緒自己再設 zh-TW 時，以執行緒的為準。
+- 文件：GetThreadPreferredUILanguages 的 MUI_MERGE_SYSTEM_FALLBACK 會傳回「corresponds exactly to the language list used by the resource loader」的清單，合併順序是執行緒 → 行程 → 使用者 → 系統預設（上面印的「merged」就是用這個旗標取得的）。SetProcessPreferredUILanguages：Windows 7 起，建議程式啟動後盡早呼叫，最多五種語言；頁面沒有提到 LoadString。
+- 結論（7.5 A 可行）：程式啟動時決定 zh-TW 或 en-US，用 `SetProcessPreferredUILanguages` 設定。還要在英文 Windows 上確認「不做設定」時拿到英文。
+- 參考：[SetProcessPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-setprocesspreferreduilanguages)、[GetThreadPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getthreadpreferreduilanguages)、[GetUserPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getuserpreferreduilanguages)。
+
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
 - 實測：`FSCTL_QUERY_FILE_LAYOUT` 在一般權限下無法使用（錯誤 1）；逐目錄掃描可以用，但讀不到部分資料夾。
@@ -1392,6 +1407,9 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 第 6 階段設計 | [MUI Resource Management](https://learn.microsoft.com/en-us/windows/win32/intl/mui-resource-management) |
 | 第 6 階段設計 | [How User Account Control works](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works) |
 | 第 6 階段設計 | [Microsoft Defender SmartScreen overview](https://learn.microsoft.com/en-us/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen/) |
+| 第 6 階段設計 | [SetProcessPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-setprocesspreferreduilanguages) |
+| 第 6 階段設計 | [GetThreadPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getthreadpreferreduilanguages) |
+| 第 6 階段設計 | [GetUserPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getuserpreferreduilanguages) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
