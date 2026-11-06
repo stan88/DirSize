@@ -1127,6 +1127,20 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - Windows 11 分頁用 z-order 判斷前面的分頁；
   - 右鍵選單用傳統登錄動詞（Windows 10 直接出現，Windows 11 在「顯示更多選項」裡）。
 
+### 2026-11-06 第 6 階段查證與設計草案
+
+- efacb2a push；第 5 階段完成。
+- 草案 `docs/DESIGN-phase6.md`：安裝程式、多語系、版本與發行。連結見參考資料，元件「第 6 階段設計」。
+- **查證重點**：
+  - MSI 的 ServiceInstall／ServiceControl 表可以安裝、停止、刪除服務；延遲啟動用 MsiServiceConfig 表（Windows Installer 5.0 起）。
+  - **WiX 不是 MIT**：原始碼是 MS-RL。README 寫「use of the WiX Toolset requires an Open Source Maintenance Fee」，OSMFEULA 第 1 節卻寫維護費只適用於年營收 1 萬美元以上的營利使用，兩者說法不一致。
+  - Inno Setup 的授權寬鬆：允許任何用途，條件是保留著作權聲明、修改版要標示；沒有提到會限制產出的安裝程式。
+  - Uninstall 機碼的頁面只列出 Windows Installer 會寫的值，沒有說明不用 MSI 時要寫哪些值。
+  - **一個 exe 裡有多種語言的字串表時，LoadString 會選哪一種，LoadString 頁和 STRINGTABLE 頁都沒有寫**；FindResourceExW 頁 404。`SetThreadPreferredUILanguages` 的頁面說，LoadString 這類載入資源的函式會呼叫 GetThreadPreferredUILanguages。所以要先實測（草案 7.5、第 8 節第 1 步）。
+  - 「一般使用者用管理員帳密提升權限時，HKCU 會是管理員的」，找到的 UAC 頁面沒有寫明。草案因此讓每個使用者自己的設定，由程式用一般權限寫入（7.2 A）。
+  - SmartScreen：沒有信譽的檔案會顯示警告。UAC：沒有簽章的程式，提升權限的提示框是黃色背景。
+- 使用者同意 7.1～7.6 都照建議：Inno Setup；右鍵選單由安裝程式寫 HKLM、面板自動啟動由程式寫 HKCU；先不簽章；移除時刪除快取；字串表放同一個 exe（先實測）；這個階段不做 Windows 11 第一層選單。
+
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
 - 實測：`FSCTL_QUERY_FILE_LAYOUT` 在一般權限下無法使用（錯誤 1）；逐目錄掃描可以用，但讀不到部分資料夾。
@@ -1365,6 +1379,19 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 驗證工具 | [GetDpiForWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforwindow) |
 | 驗證工具 | [PrintWindow（PW_RENDERFULLCONTENT）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-printwindow) |
 | 驗證工具 | [SetProcessDpiAwarenessContext](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext) |
+| 第 6 階段設計 | [ServiceInstall Table](https://learn.microsoft.com/en-us/windows/win32/msi/serviceinstall-table) |
+| 第 6 階段設計 | [ServiceControl Table](https://learn.microsoft.com/en-us/windows/win32/msi/servicecontrol-table) |
+| 第 6 階段設計 | [MsiServiceConfig Table（SERVICE_CONFIG_DELAYED_AUTO_START，Windows Installer 5.0 起）](https://learn.microsoft.com/en-us/windows/win32/msi/msiserviceconfig-table) |
+| 第 6 階段設計 | [Major Upgrades](https://learn.microsoft.com/en-us/windows/win32/msi/major-upgrades) |
+| 第 6 階段設計 | [Uninstall Registry Key](https://learn.microsoft.com/en-us/windows/win32/msi/uninstall-registry-key) |
+| 第 6 階段設計 | [WiX Toolset README、LICENSE.TXT（MS-RL）、OSMFEULA.txt](https://github.com/wixtoolset/wix) |
+| 第 6 階段設計 | [Inno Setup License](https://jrsoftware.org/files/is/license.txt) |
+| 第 6 階段設計 | [User Interface Language Management](https://learn.microsoft.com/en-us/windows/win32/intl/user-interface-language-management) |
+| 第 6 階段設計 | [SetThreadPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-setthreadpreferreduilanguages) |
+| 第 6 階段設計 | [STRINGTABLE resource](https://learn.microsoft.com/en-us/windows/win32/menurc/stringtable-resource) |
+| 第 6 階段設計 | [MUI Resource Management](https://learn.microsoft.com/en-us/windows/win32/intl/mui-resource-management) |
+| 第 6 階段設計 | [How User Account Control works](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works) |
+| 第 6 階段設計 | [Microsoft Defender SmartScreen overview](https://learn.microsoft.com/en-us/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen/) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
