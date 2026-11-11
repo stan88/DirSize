@@ -26,6 +26,7 @@
 #include "ui/folder_source.h"
 #include "ui/folder_tree.h"
 #include "ui/format.h"
+#include "ui/language.h"
 #include "ui/shell_verb.h"
 #include "ui/size_list.h"
 #include "ui/strings.h"
@@ -50,6 +51,8 @@ constexpr UINT kMenuPick = 101;
 constexpr UINT kMenuOpen = 102;
 constexpr UINT kMenuExplore = 103;
 constexpr UINT kMenuRefresh = 104;
+constexpr UINT kMenuLangAuto = 199;  // then kMenuLangFirst + index into Languages()
+constexpr UINT kMenuLangFirst = 200;
 constexpr int kTreeWidthDip = 260;
 constexpr int kSplitterDip = 6;
 
@@ -334,6 +337,22 @@ void MainWindow::ShowSettingsMenu() {
     AppendMenuW(menu, MF_STRING | (installed ? MF_CHECKED : MF_UNCHECKED), kMenuVerb, Text(IDS_MENU_VERB).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuPick, Text(IDS_MENU_PICK).c_str());
+    // Language: follow Windows, or one of the built-in tables.
+    const std::wstring saved = SavedLanguage();
+    const auto languages = Languages();
+    const size_t savedIndex = FindLanguage(saved, languages);
+    HMENU langMenu = CreatePopupMenu();
+    if (langMenu) {
+        AppendMenuW(langMenu, MF_STRING | (savedIndex >= languages.size() ? MF_CHECKED : MF_UNCHECKED), kMenuLangAuto,
+                    Text(IDS_MENU_LANG_AUTO).c_str());
+        AppendMenuW(langMenu, MF_SEPARATOR, 0, nullptr);
+        for (size_t i = 0; i < languages.size(); ++i) {
+            AppendMenuW(langMenu, MF_STRING | (i == savedIndex ? MF_CHECKED : MF_UNCHECKED),
+                        kMenuLangFirst + static_cast<UINT>(i), LanguageDisplayName(languages[i].locale).c_str());
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(langMenu), Text(IDS_MENU_LANGUAGE).c_str());
+    }
     RECT more = MoreButtonRect();
     POINT pt{more.right, more.bottom};
     ClientToScreen(hwnd_, &pt);
@@ -345,11 +364,26 @@ void MainWindow::ShowSettingsMenu() {
     if (cmd == kMenuVerb) {
         DWORD error = installed ? RemoveShellVerb() : InstallShellVerb();
         if (error != ERROR_SUCCESS) {
-            status_ = Text(IDS_ERR_VERB) + std::to_wstring(error);
+            status_ = Format(IDS_ERR_VERB, {std::to_wstring(error)});
             InvalidateRect(hwnd_, nullptr, FALSE);
         }
     } else if (cmd == kMenuPick) {
         PickFolder();
+    } else if (cmd == kMenuLangAuto || (cmd >= kMenuLangFirst && cmd < kMenuLangFirst + languages.size())) {
+        std::wstring choice = cmd == kMenuLangAuto ? L"" : languages[cmd - kMenuLangFirst].locale;
+        if (choice != saved) {
+            DWORD error = SaveLanguage(choice);
+            if (error != ERROR_SUCCESS) {
+                status_ = Format(IDS_ERR_SETTING, {std::to_wstring(error)});
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
+            // Switch now: most text is loaded when painted; the title, the
+            // status line, the list message and the drive labels are rebuilt
+            // by loading the folder and the drives again.
+            ApplyUiLanguage();
+            Navigate(path_, true);
+        }
     }
 }
 
@@ -440,16 +474,17 @@ void MainWindow::OnLoaded(std::unique_ptr<FolderResult> r) {
             break;
         case LoadStatus::Failed:
             list_->SetItems({}, 0, false);
-            list_->SetMessage(Text(IDS_ERR_FAILED) + std::to_wstring(r->error));
+            list_->SetMessage(Format(IDS_ERR_FAILED, {std::to_wstring(r->error)}));
             status_.clear();
             break;
         case LoadStatus::Ok: {
             const bool keep = true;  // a refresh of the same folder keeps the position
             list_->SetMessage(L"");
             list_->SetItems(std::move(r->items), r->totalAllocated, keep);
-            status_ = Text(IDS_TOTAL) + FormatBytes(r->totalLogical) + L"  \u00B7  " + Text(IDS_COL_ALLOCATED) + L" " +
-                      FormatBytes(r->totalAllocated) + L"  \u00B7  " + FormatCount(r->totalFiles) +
-                      Text(IDS_FILES_SUFFIX) + L"  \u00B7  " + Text(r->fromService ? IDS_SRC_SERVICE : IDS_SRC_WALK);
+            status_ = Format(IDS_TOTAL, {FormatBytes(r->totalLogical)}) + L"  \u00B7  " +
+                      Format(IDS_STATUS_ALLOCATED, {FormatBytes(r->totalAllocated)}) + L"  \u00B7  " +
+                      Format(IDS_FILE_COUNT, {FormatCount(r->totalFiles)}) + L"  \u00B7  " +
+                      Text(r->fromService ? IDS_SRC_SERVICE : IDS_SRC_WALK);
             std::wstring note = NoteText(r->note);
             if (!note.empty()) status_ += L"  \u00B7  " + note;
             break;
@@ -750,6 +785,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     // Single-threaded apartment: UISettings (Windows Runtime) and the folder
     // picker (COM) are used on this thread.
     winrt::init_apartment(winrt::apartment_type::single_threaded);
+    // Before any window or thread: worker threads load strings too.
+    ApplyUiLanguage();
     if (wcsstr(GetCommandLineW(), L"--check")) return RunCheck();
     if (wcsstr(GetCommandLineW(), L"--panel")) return RunPanel(instance);
     if (!MainWindow::Register(instance)) return 1;

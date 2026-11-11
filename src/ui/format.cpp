@@ -45,3 +45,25 @@ std::wstring FormatPercent(std::uint64_t part, std::uint64_t whole) {
 }
 
 }  // namespace dirsize::ui
+
+namespace dirsize::ui {
+
+std::wstring FormatPattern(const std::wstring& pattern, std::initializer_list<std::wstring> args) {
+    std::wstring out;
+    out.reserve(pattern.size());
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        wchar_t c = pattern[i];
+        if (c == L'%' && i + 1 < pattern.size() && pattern[i + 1] >= L'1' && pattern[i + 1] <= L'9') {
+            size_t n = static_cast<size_t>(pattern[i + 1] - L'1');
+            if (n < args.size()) {
+                out += *(args.begin() + n);
+                ++i;
+                continue;
+            }
+        }
+        out += c;
+    }
+    return out;
+}
+
+}  // namespace dirsize::ui

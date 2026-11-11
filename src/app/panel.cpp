@@ -266,7 +266,7 @@ void Panel::OnLoaded(std::unique_ptr<FolderResult> r) {
             status_.clear();
             break;
         case LoadStatus::Failed:
-            list_->SetMessage(Text(IDS_ERR_FAILED) + std::to_wstring(r->error));
+            list_->SetMessage(Format(IDS_ERR_FAILED, {std::to_wstring(r->error)}));
             status_.clear();
             break;
         case LoadStatus::Ok: {

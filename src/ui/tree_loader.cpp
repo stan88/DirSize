@@ -69,12 +69,7 @@ std::unique_ptr<TreeListing> ListFolder(const std::wstring& path) {
 std::wstring DriveText(const std::wstring& label, const std::wstring& root) {
     std::wstring letter = root.substr(0, 2);  // "C:"
     if (label.empty()) return letter;
-    std::wstring text = Text(IDS_DRIVE_LABEL);  // "%1 (%2)"
-    size_t p1 = text.find(L"%1");
-    if (p1 != std::wstring::npos) text.replace(p1, 2, label);
-    size_t p2 = text.find(L"%2");
-    if (p2 != std::wstring::npos) text.replace(p2, 2, letter);
-    return text;
+    return Format(IDS_DRIVE_LABEL, {label, letter});  // "%1 (%2)"
 }
 
 void ListDrives(const TreeLoader::State& s) {

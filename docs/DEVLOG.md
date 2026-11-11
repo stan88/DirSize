@@ -1162,6 +1162,32 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 - 使用者決定：簡體中文（zh-CN、zh-SG）用英文，不用繁體。對應規則寫進設計第 5 節。
 - 參考：[SetProcessPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-setprocesspreferreduilanguages)、[GetThreadPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getthreadpreferreduilanguages)、[GetUserPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getuserpreferreduilanguages)。
 
+### 2026-11-06 第 6 階段：語系檔 `lang/*.json` 與語言選擇
+
+- 使用者提議：開源專案要讓別人能貢獻語系檔。比較了「建置時轉換」和「執行時讀檔」，使用者選建置時轉換：仍然一個 exe，實測過的 LoadString 做法不變。
+- **產生器** `cmake/gen_lang.cmake`（`cmake -P`，不需要其他工具）：
+  - 讀 `src/ui/string_ids.h` 的 `#define IDS_`，和每個 `lang/<locale>.json`，產生 `build/generated/` 下的 `lang.rc`（每種語言一個 STRINGTABLE）、`languages.inc`（語言表）、`lang_expected.inc`（測試用的全部字串）。
+  - 檢查：en-US 缺 ID、檔名和 `locale` 不同、未知的 key、占位符號和英文不同 → 建置失敗；其他語言缺字串 → 用英文並警告；去掉 UTF-8 BOM。
+  - `LANGUAGE` 敘述寫 `winnt.h` 的常數名稱，不寫數字：LANGUAGE 敘述的頁面沒有說明可不可以用數字。
+  - 用 `file(GLOB CONFIGURE_DEPENDS)` 找語系檔，新增檔案會在下次建置時加入。文件提醒這個旗標「may not work reliably on all generators」，在 VS 產生器上實測（只執行 `--build`，不重新設定）：新增 `lang/en-GB.json` 後，建置會先「Checking Build System」，再重新產生，`languages.inc` 出現 en-GB，ui-tests 265 項全過；刪掉檔案再建置，`lang.rc` 和 `languages.inc` 裡的 en-GB 都消失了。
+- **選語言**：`PickLanguage`（`src/ui/language.cpp`，純邏輯）依序看使用者的顯示語言，第一個被某個檔案的 `locale` 或 `matches` 對到的就用；都沒有就用 en-US。`ApplyUiLanguage` 在 `wWinMain` 開頭（視窗、面板、`--check` 都會經過）用 `SetProcessPreferredUILanguages` 設定。
+- 「⋯」選單新增「語言」：跟著 Windows，或選一種語言（名稱用 `GetLocaleInfoEx` 的 `LOCALE_SNATIVEDISPLAYNAME`），存在 HKCU\Software\DirSize 的 `Language`。
+  - 第一版是「下次啟動生效」，使用者回報「語言切換無效」：設定有存進去，重開後也是英文，但提示「重新開啟後套用」會被下一次讀取資料夾的狀態蓋掉，看起來就像沒有作用。
+  - 改成立刻切換：存檔後再呼叫一次 `ApplyUiLanguage`，再重新讀取目前的資料夾和磁碟機清單，讓標題、狀態列、清單訊息、磁碟機標籤重建（其他文字是重畫時才載入的）。SetProcessPreferredUILanguages 的頁面只說「建議」啟動後盡早呼叫，沒有禁止之後再呼叫；ui-tests 實測連續設定 en-US → zh-TW → en-US，主執行緒和新執行緒每次都拿到對應的語言。
+  - 已經在執行的面板（`--panel`，另一個程序）不會跟著切換，要重新開啟。
+- 串接的字串改成 `%1`：`IDS_TOTAL`、`IDS_FILE_COUNT`（原 `IDS_FILES_SUFFIX`）、新增 `IDS_STATUS_ALLOCATED`、`IDS_ERR_FAILED`、`IDS_ERR_VERB`；新增 `FormatPattern`（一次替換，參數裡的 `%2` 不會再被換）。新增 `IDS_MENU_LANGUAGE`、`IDS_MENU_LANG_AUTO`、`IDS_ERR_SETTING`。
+- zh-TW.json 是從原本的 `dirsize.rc` 轉出來的，和原字串逐條比對過，除了上面改成 `%1` 的四條以外都相同。
+- **測試**（ui-tests 271 項全過，4 個測試程式全過）：
+  - `FormatPattern`、`TagMatches`、`PickLanguage`（zh-HK→zh-TW、zh-CN→en-US、en-GB→en-US、ja-JP;zh-TW 等）。
+  - 每個語言的 `LANG_`／`SUBLANG_` 和 `LocaleNameToLCID(locale)` 一致。
+  - ui-tests 也編入 `lang.rc`：每種語言設為執行緒偏好後，每個字串都載入得到，而且和 JSON 的內容完全相同（包括 tab）。
+  - 故意改錯驗證：把 zh-TW 的 sublanguage 改成 SIMPLIFIED → 2 項失敗；把 `IDS_TOTAL` 的 `%1` 拿掉 → 建置失敗。
+- 實機：預設是中文；HKCU 設 `Language=en-US` 後啟動，欄名、清單訊息、狀態列、提示都是英文。測完已刪除這個設定值。背景執行緒（磁碟機標籤）的兩種語言字串目前相同，畫面看不出差別；它用的語言靠的是實測程式的結果：整個程式的設定會套用到新執行緒。
+- 從空的建置資料夾完整建置一次（平行建置）：產生器先執行，ui-tests 262 項全過（當時的數字）。
+- VM 測試腳本只比對 `source=`、`note=` 這類固定代碼，不受介面語言影響。
+- 已知、不是這次造成的：底部提示文字的寬度要小於狀態列的一半才會顯示，中文提示比較長，視窗不夠寬時會被隱藏。
+- 給翻譯者的說明 `lang/README.md`（中英）；兩份 README 都加了連結。
+
 ### 2026-11-03 權限與部署方向（第 4 階段參考）
 
 - 實測：`FSCTL_QUERY_FILE_LAYOUT` 在一般權限下無法使用（錯誤 1）；逐目錄掃描可以用，但讀不到部分資料夾。
@@ -1415,6 +1441,11 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 第 6 階段設計 | [Microsoft Defender SmartScreen overview](https://learn.microsoft.com/en-us/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen/) |
 | 第 6 階段設計 | [SetProcessPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-setprocesspreferreduilanguages) |
 | 第 6 階段設計 | [GetThreadPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getthreadpreferreduilanguages) |
+| 第 6 階段 | [CMake string(JSON)（3.19 起；錯誤用 ERROR_VARIABLE 回報）](https://cmake.org/cmake/help/latest/command/string.html) |
+| 第 6 階段 | [CMake file(GLOB CONFIGURE_DEPENDS)、file(READ HEX)](https://cmake.org/cmake/help/latest/command/file.html) |
+| 第 6 階段 | [LocaleNameToLCID](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-localenametolcid) |
+| 第 6 階段 | [LOCALE_SNATIVEDISPLAYNAME（Windows 7 起）](https://learn.microsoft.com/en-us/windows/win32/intl/locale-snative-constants) |
+| 第 6 階段 | [LANGUAGE statement](https://learn.microsoft.com/en-us/windows/win32/menurc/language-statement) |
 | 第 6 階段設計 | [GetUserPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getuserpreferreduilanguages) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |

@@ -1,6 +1,7 @@
-// String table IDs of the front end (src/app/dirsize.rc). Only #defines:
-// this header is also read by the resource compiler. All user-visible text
-// lives in the string table so Phase 6 only has to add translations.
+// String table IDs of the front end. Only #defines: this header is also read
+// by the resource compiler and by cmake/gen_lang.cmake. The text of each ID
+// is in lang/<locale>.json (lang/README.md); the build turns those files into
+// string tables.
 #pragma once
 
 #define IDS_APP_TITLE           100
@@ -26,7 +27,8 @@
 #define IDS_ERR_ACCESS          151
 #define IDS_ERR_FAILED          152
 #define IDS_TOTAL               160
-#define IDS_FILES_SUFFIX        161
+#define IDS_FILE_COUNT          161
+#define IDS_STATUS_ALLOCATED    162
 #define IDS_HINT                170
 #define IDS_PICK_FOLDER         171
 #define IDS_DRIVE_LABEL         180
@@ -38,3 +40,6 @@
 #define IDS_MENU_SHOW_FILE      194
 #define IDS_MENU_REFRESH        195
 #define IDS_ERR_VERB            196
+#define IDS_MENU_LANGUAGE       197
+#define IDS_MENU_LANG_AUTO      198
+#define IDS_ERR_SETTING         200

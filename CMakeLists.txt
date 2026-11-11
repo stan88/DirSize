@@ -58,6 +58,21 @@ add_library(dirsize_service STATIC
 target_include_directories(dirsize_service PUBLIC src)
 target_link_libraries(dirsize_service PUBLIC dirsize_core)
 
+# Phase 6: string tables from lang/<locale>.json (lang/README.md). The glob
+# picks up a new language file at the next build (CONFIGURE_DEPENDS).
+file(GLOB DIRSIZE_LANG_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/lang/*.json)
+set(DIRSIZE_GEN ${CMAKE_BINARY_DIR}/generated)
+set(DIRSIZE_LANG_OUTPUTS ${DIRSIZE_GEN}/lang.rc ${DIRSIZE_GEN}/languages.inc ${DIRSIZE_GEN}/lang_expected.inc)
+add_custom_command(
+    OUTPUT ${DIRSIZE_LANG_OUTPUTS}
+    COMMAND ${CMAKE_COMMAND} -DLANG_DIR=${CMAKE_SOURCE_DIR}/lang
+            -DIDS_HEADER=${CMAKE_SOURCE_DIR}/src/ui/string_ids.h -DOUT_DIR=${DIRSIZE_GEN}
+            -P ${CMAKE_SOURCE_DIR}/cmake/gen_lang.cmake
+    DEPENDS ${DIRSIZE_LANG_FILES} ${CMAKE_SOURCE_DIR}/cmake/gen_lang.cmake ${CMAKE_SOURCE_DIR}/src/ui/string_ids.h
+    COMMENT "Generating string tables from lang/*.json"
+    VERBATIM)
+add_custom_target(dirsize_lang DEPENDS ${DIRSIZE_LANG_OUTPUTS})
+
 # Phase 5 front end: pure logic (unit-tested by ui-tests).
 add_library(dirsize_ui_core STATIC
     src/ui/format.cpp
@@ -68,8 +83,10 @@ add_library(dirsize_ui_core STATIC
     src/ui/tree_model.cpp
     src/ui/scroll_geometry.cpp
     src/ui/verb_command.cpp
+    src/ui/language.cpp
 )
-target_include_directories(dirsize_ui_core PUBLIC src)
+target_include_directories(dirsize_ui_core PUBLIC src PRIVATE ${DIRSIZE_GEN})
+add_dependencies(dirsize_ui_core dirsize_lang)
 
 # Phase 5 front end: window pieces (theme needs C++/WinRT: WindowsApp.lib).
 add_library(dirsize_ui STATIC
@@ -86,7 +103,9 @@ add_library(dirsize_ui STATIC
 target_link_libraries(dirsize_ui PUBLIC dirsize_ui_core dirsize_service WindowsApp dwmapi ole32 oleaut32 uuid shell32)
 
 # The front end executable (Windows subsystem).
-add_executable(dirsize WIN32 src/app/main.cpp src/app/panel.cpp src/app/dirsize.rc src/app/dirsize.manifest)
+add_executable(dirsize WIN32 src/app/main.cpp src/app/panel.cpp src/app/dirsize.rc ${DIRSIZE_GEN}/lang.rc
+    src/app/dirsize.manifest)
+add_dependencies(dirsize dirsize_lang)
 target_link_libraries(dirsize PRIVATE dirsize_ui)
 
 add_executable(dirsize-cli src/cli/main.cpp)
@@ -126,6 +145,9 @@ add_test(NAME live-tests COMMAND live-tests)
 add_executable(service-tests tests/service_tests.cpp)
 target_link_libraries(service-tests PRIVATE dirsize_service)
 add_test(NAME service-tests COMMAND service-tests)
-add_executable(ui-tests tests/ui_tests.cpp)
+# ui-tests carries the string tables too, to check every language loads.
+add_executable(ui-tests tests/ui_tests.cpp ${DIRSIZE_GEN}/lang.rc)
+target_include_directories(ui-tests PRIVATE ${DIRSIZE_GEN})
 target_link_libraries(ui-tests PRIVATE dirsize_ui_core shell32)
+add_dependencies(ui-tests dirsize_lang)
 add_test(NAME ui-tests COMMAND ui-tests)

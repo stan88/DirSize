@@ -8,10 +8,13 @@
 
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "ui/format.h"
+#include "ui/language.h"
 #include "ui/list_model.h"
+#include "ui/string_ids.h"
 #include "ui/palette.h"
 #include "ui/panel_rules.h"
 #include "ui/placement.h"
@@ -544,6 +547,135 @@ void TestTreeReveal() {
     CHECK(m.SetChildren(L"E:\\", {L"data"}).empty() && m.Selected() == m.Find(L"E:\\data"));
 }
 
+void TestFormatPattern() {
+    CHECK(FormatPattern(L"Total %1", {L"5 MB"}) == L"Total 5 MB");
+    CHECK(FormatPattern(L"%2 (%1)", {L"C:", L"Disk"}) == L"Disk (C:)");
+    CHECK(FormatPattern(L"%1 files", {L"%2"}) == L"%2 files");  // one pass
+    CHECK(FormatPattern(L"%1 %3 100%", {L"a"}) == L"a %3 100%");
+    CHECK(FormatPattern(L"%", {}) == L"%");
+    CHECK(FormatPattern(L"%0%9", {L"x"}) == L"%0%9");
+}
+
+void TestLanguagePick() {
+    CHECK(TagMatches(L"en-GB", L"en") && TagMatches(L"EN", L"en") && TagMatches(L"zh-Hant-TW", L"zh-Hant"));
+    CHECK(!TagMatches(L"zh-CN", L"zh-TW") && !TagMatches(L"eng", L"en") && !TagMatches(L"zh", L"zh-TW"));
+    CHECK(!TagMatches(L"en", L""));
+
+    const wchar_t* const en[] = {L"en", nullptr};
+    const wchar_t* const zh[] = {L"zh-TW", L"zh-HK", L"zh-MO", L"zh-Hant", nullptr};
+    const wchar_t* const ja[] = {L"ja", nullptr};
+    const LanguageEntry table[] = {{L"en-US", 0x0409, en}, {L"zh-TW", 0x0404, zh}, {L"ja-JP", 0x0411, ja}};
+    using V = std::vector<std::wstring>;
+    CHECK(PickLanguage(V{L"zh-TW"}, table) == 1);
+    CHECK(PickLanguage(V{L"zh-HK"}, table) == 1);
+    CHECK(PickLanguage(V{L"zh-Hant-TW"}, table) == 1);
+    CHECK(PickLanguage(V{L"zh-CN"}, table) == 0);              // simplified: skipped, English
+    CHECK(PickLanguage(V{L"zh-CN", L"zh-TW"}, table) == 1);    // next in the list
+    CHECK(PickLanguage(V{L"en-GB"}, table) == 0);
+    CHECK(PickLanguage(V{L"ja-JP", L"zh-TW"}, table) == 2);
+    CHECK(PickLanguage(V{L"fr-FR", L"zh-TW"}, table) == 1);
+    CHECK(PickLanguage(V{L"fr-FR"}, table) == 0);
+    CHECK(PickLanguage(V{}, table) == 0);
+    CHECK(FindLanguage(L"ZH-tw", table) == 1 && FindLanguage(L"", table) == 3 && FindLanguage(L"zh", table) == 3);
+    const LanguageEntry noEnglish[] = {{L"zh-TW", 0x0404, zh}};
+    CHECK(PickLanguage(V{L"fr-FR"}, noEnglish) == 1);  // table.size(): nothing to pick
+
+    // The built-in table: en-US is there, and the zh-TW rule is the decided one.
+    auto built = Languages();
+    CHECK(FindLanguage(L"en-US", built) < built.size());
+    CHECK(PickLanguage(V{L"zh-HK"}, built) == FindLanguage(L"zh-TW", built));
+    CHECK(PickLanguage(V{L"zh-CN"}, built) == FindLanguage(L"en-US", built));
+}
+
+// Each lang/<locale>.json: its language/sublanguage names give the same
+// LANGID Windows has for its locale name. A wrong pair would compile but its
+// table would not be picked (DEVLOG 2026-11-06).
+void TestLanguageIds() {
+    for (const auto& e : Languages()) {
+        LCID lcid = LocaleNameToLCID(e.locale, 0);
+        CHECK(lcid != 0 && LANGIDFROMLCID(lcid) == e.langId);
+    }
+}
+
+struct ExpectedString {
+    const wchar_t* locale;
+    UINT id;
+    const char* text;  // UTF-8 (/utf-8)
+};
+
+const ExpectedString kExpected[] = {
+#include "lang_expected.inc"
+};
+
+std::wstring Wide(const char* utf8) {
+    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, nullptr, 0);
+    if (n <= 0) return L"<bad utf-8>";
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8, -1, w.data(), n);
+    w.resize(static_cast<size_t>(n) - 1);
+    return w;
+}
+
+// Every string of every language loads from the compiled tables when that
+// language is preferred, exactly as written in the JSON file (tabs included).
+void TestStringTables() {
+    size_t perLanguage = 0;
+    for (const auto& e : kExpected) perLanguage += wcscmp(e.locale, kExpected[0].locale) == 0 ? 1 : 0;
+    CHECK(perLanguage > 0 && perLanguage * Languages().size() == std::size(kExpected));
+    for (const auto& lang : Languages()) {
+        std::wstring list = lang.locale;
+        list.append(2, L'\0');
+        ULONG count = 0;
+        CHECK(SetThreadPreferredUILanguages(MUI_LANGUAGE_NAME, list.c_str(), &count) && count == 1);
+        int bad = 0;
+        for (const auto& e : kExpected) {
+            if (wcscmp(e.locale, lang.locale) != 0) continue;
+            const wchar_t* text = nullptr;
+            int length = LoadStringW(GetModuleHandleW(nullptr), e.id, reinterpret_cast<LPWSTR>(&text), 0);
+            std::wstring got = length > 0 && text ? std::wstring(text, static_cast<size_t>(length)) : L"";
+            if (got != Wide(e.text) || got.empty()) {
+                std::printf("  string %u of %ls differs\n", e.id, lang.locale);
+                ++bad;
+            }
+        }
+        CHECK(bad == 0);
+    }
+    SetThreadPreferredUILanguages(0, nullptr, nullptr);
+
+    // The "..." menu switches the language of a running process: a second
+    // SetProcessPreferredUILanguages call must take effect, on this thread
+    // and on a new one.
+    auto expectedText = [](const wchar_t* locale, UINT id) {
+        for (const auto& e : kExpected) {
+            if (e.id == id && wcscmp(e.locale, locale) == 0) return Wide(e.text);
+        }
+        return std::wstring(L"<none>");
+    };
+    auto loaded = [](UINT id) {
+        const wchar_t* text = nullptr;
+        int length = LoadStringW(GetModuleHandleW(nullptr), id, reinterpret_cast<LPWSTR>(&text), 0);
+        return length > 0 && text ? std::wstring(text, static_cast<size_t>(length)) : std::wstring();
+    };
+    for (const wchar_t* locale : {L"en-US", L"zh-TW", L"en-US"}) {
+        std::wstring list = locale;
+        list.append(2, L'\0');
+        ULONG count = 0;
+        CHECK(SetProcessPreferredUILanguages(MUI_LANGUAGE_NAME, list.c_str(), &count) && count == 1);
+        CHECK(loaded(IDS_COL_NAME) == expectedText(locale, IDS_COL_NAME));
+        std::wstring fromThread;
+        std::thread([&] { fromThread = loaded(IDS_COL_NAME); }).join();
+        CHECK(fromThread == expectedText(locale, IDS_COL_NAME));
+    }
+    // Spot checks that the JSON escapes survived (a menu accelerator tab).
+    std::wstring pick = Wide(kExpected[0].text);
+    CHECK(!pick.empty());
+    bool hasTab = false;
+    for (const auto& e : kExpected) {
+        if (e.id == IDS_MENU_REFRESH && Wide(e.text).find(L'\t') != std::wstring::npos) hasTab = true;
+    }
+    CHECK(hasTab);
+}
+
 }  // namespace
 
 int main() {
@@ -557,6 +689,10 @@ int main() {
     TestTreePaths();
     TestTreeModel();
     TestTreeReveal();
+    TestFormatPattern();
+    TestLanguagePick();
+    TestLanguageIds();
+    TestStringTables();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

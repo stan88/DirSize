@@ -38,6 +38,7 @@ DirSize 是依據 Microsoft 公開文件撰寫的獨立實作。
 ## 參與開發
 
 乾淨實作與隱私規則請見 [CONTRIBUTING.zh-TW.md](CONTRIBUTING.zh-TW.md)。
+想翻譯介面，請見 [lang/README.md](lang/README.md)。
 
 ## 授權
 

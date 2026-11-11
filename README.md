@@ -39,6 +39,7 @@ but contains none of its code. See [docs/DEVLOG.md](docs/DEVLOG.md).
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the clean-room and privacy rules.
+To translate the interface, see [lang/README.md](lang/README.md).
 
 ## License
 
