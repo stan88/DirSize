@@ -73,6 +73,21 @@ add_custom_command(
     VERBATIM)
 add_custom_target(dirsize_lang DEPENDS ${DIRSIZE_LANG_OUTPUTS})
 
+# Phase 6: version information for a shipped exe (cmake/version.rc.in). The
+# version is project(VERSION) above.
+function(dirsize_add_version target description)
+    set(VER_NAME ${target})
+    set(VER_DESCRIPTION ${description})
+    set(VER_MAJOR ${PROJECT_VERSION_MAJOR})
+    set(VER_MINOR ${PROJECT_VERSION_MINOR})
+    set(VER_PATCH ${PROJECT_VERSION_PATCH})
+    set(VER_STRING ${PROJECT_VERSION})
+    set(VER_COMPANY "DirSize project")
+    set(VER_COPYRIGHT "Copyright (c) 2026 Stanley. MIT License.")
+    configure_file(${CMAKE_SOURCE_DIR}/cmake/version.rc.in ${DIRSIZE_GEN}/${target}_version.rc @ONLY)
+    target_sources(${target} PRIVATE ${DIRSIZE_GEN}/${target}_version.rc)
+endfunction()
+
 # Phase 5 front end: pure logic (unit-tested by ui-tests).
 add_library(dirsize_ui_core STATIC
     src/ui/format.cpp
@@ -107,13 +122,16 @@ add_executable(dirsize WIN32 src/app/main.cpp src/app/panel.cpp src/app/dirsize.
     src/app/dirsize.manifest)
 add_dependencies(dirsize dirsize_lang)
 target_link_libraries(dirsize PRIVATE dirsize_ui)
+dirsize_add_version(dirsize "DirSize")
 
 add_executable(dirsize-cli src/cli/main.cpp)
 target_link_libraries(dirsize-cli PRIVATE dirsize_service psapi)
+dirsize_add_version(dirsize-cli "DirSize command-line tool")
 
 # The Windows service (docs/DESIGN-phase4.md).
 add_executable(dirsize-service src/service/service_main.cpp)
 target_link_libraries(dirsize-service PRIVATE dirsize_service)
+dirsize_add_version(dirsize-service "DirSize service")
 
 # Phase 2 feasibility probe (measurement only, not shipped).
 add_executable(layout-probe tools/layout_probe.cpp)

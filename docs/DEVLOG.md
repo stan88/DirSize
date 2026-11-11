@@ -1197,6 +1197,34 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 - **安全要求**：服務看得到所有資料夾，回應查詢前必須確認呼叫者本人有權限看該資料夾，否則一般使用者能查到其他使用者的資料夾名稱和大小。候選做法是 `ImpersonateNamedPipeClient`，第 4 階段再查文件確認。
 - 待查：讀取 USN 日誌需要什麼權限（第 3 階段）。
 
+### 2026-11-11　第 6 階段：執行檔的版本資訊
+
+- **做了什麼**：`dirsize.exe`、`dirsize-cli.exe`、`dirsize-service.exe` 各加一份 `VERSIONINFO` 資源，檔案「內容」頁看得到版本。測試程式和探測工具不發行，沒有加。
+- **做法**：
+  - 一份範本 `cmake/version.rc.in`，由 `CMakeLists.txt` 的 `dirsize_add_version(目標 說明)` 用 `configure_file(... @ONLY)` 各產生一份到建置資料夾。
+  - 版本號只有一個來源：`project(DirSize VERSION 0.1.0)`。改這一行，三個執行檔都會跟著變（文件：輸入檔改了，建置時會重新產生）。
+  - 依文件：資源識別碼是 1（`VS_VERSION_INFO`）；`FILEVERSION` 是四個 16 位元數字，第四個填 0；常數要引入 `winver.h`。
+  - 字串區塊用美式英文加 Unicode（`040904B0`，`Translation 0x0409, 1200`），內容全是 ASCII。依 5 的範圍，版本資訊不翻譯。
+  - 文件標為必填的字串都有填：`CompanyName`、`FileDescription`、`FileVersion`、`InternalName`、`OriginalFilename`、`ProductName`、`ProductVersion`。`LegalCopyright` 和 LICENSE 的著作權行一致。
+  - Debug 組態設 `VS_FF_DEBUG`：CMake 在 Debug 組態會給資源編譯器 `_DEBUG`（在產生的專案檔裡確認過）。
+- **驗證**（Release 建置，沒有警告）：用 PowerShell 讀三個執行檔的 `VersionInfo`，檔案版本和產品版本都是 `0.1.0`，說明分別是 `DirSize`、`DirSize command-line tool`、`DirSize service`，原始檔名和實際檔名相同，語言是英文（美國），不是偵錯版。沒有加版本資訊的 `ui-tests.exe` 讀出來是空的，確認讀到的不是預設值。4 組測試全過。
+- **待使用者確認**：`CompanyName` 目前填 `DirSize project`（文件要求必填，專案沒有公司）。
+
+### 2026-11-11　第 6 階段查證：右鍵選單文字跟著使用者的語言
+
+- **問題**：安裝程式把右鍵選單寫進 HKLM、給所有使用者（7.2 A），預設值裡的文字就只有一種語言。
+- **文件**（Using Registry String Redirection）：動詞機碼的預設值保留一般文字，另外加 `MUIVerb` 值，寫成 `@<執行檔路徑>,-<字串資源 ID>`，選單文字就會依使用者的介面語言載入。Windows XP 起支援。逗號和減號之間不能有空白，不能用短檔名。
+- **實測**（本機，用 PowerShell 呼叫 `SHLoadIndirectString`，對象是建置出來的 `dirsize.exe`，字串 ID 181）：
+  - 不設定語言：`用 DirSize 開啟`。
+  - 執行緒語言設成 en-US：`Open with DirSize`；設回 zh-TW：中文。
+  - 不存在的 ID：失敗（`0x80004005`），沒有回傳文字。
+- **結論**：
+  - 安裝程式寫 HKLM 時，預設值寫英文，加上 `MUIVerb = @<安裝路徑>\dirsize.exe,-181`。字串 ID 181（`IDS_VERB_TEXT`）從此不能改號。
+  - 選單是檔案總管載入的，用的是 Windows 的語言規則，不是 DirSize 自己的對應規則，也不看 DirSize 裡手動選的語言。依先前的實測，沒有對應字串表的語言（例如 zh-HK）會落到哪一種，由 Windows 決定。
+  - 程式自己寫 HKCU 的那一份（不用安裝的版本）維持現狀：直接寫入當下介面語言的文字，和畫面一致。
+  - 還沒驗證：實際在檔案總管的右鍵選單裡看到 `MUIVerb` 的文字。留到安裝程式做好後，在中文機和英文 VM 各看一次。
+  - `SHLoadIndirectString` 文件提到 MUI 快取：資源內容改了但 ID 沒變時，快取不會更新，可以在後面加 `;v2`。翻譯文字日後修改時要留意。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1446,6 +1474,12 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 第 6 階段 | [LocaleNameToLCID](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-localenametolcid) |
 | 第 6 階段 | [LOCALE_SNATIVEDISPLAYNAME（Windows 7 起）](https://learn.microsoft.com/en-us/windows/win32/intl/locale-snative-constants) |
 | 第 6 階段 | [LANGUAGE statement](https://learn.microsoft.com/en-us/windows/win32/menurc/language-statement) |
+| 第 6 階段 | [VERSIONINFO resource](https://learn.microsoft.com/en-us/windows/win32/menurc/versioninfo-resource) |
+| 第 6 階段 | [StringFileInfo BLOCK statement](https://learn.microsoft.com/en-us/windows/win32/menurc/stringfileinfo-block) |
+| 第 6 階段 | [VarFileInfo BLOCK statement](https://learn.microsoft.com/en-us/windows/win32/menurc/varfileinfo-block) |
+| 第 6 階段 | [CMake configure_file（@ONLY）](https://cmake.org/cmake/help/latest/command/configure_file.html) |
+| 第 6 階段 | [Using Registry String Redirection（MUIVerb）](https://learn.microsoft.com/en-us/windows/win32/intl/using-registry-string-redirection) |
+| 第 6 階段 | [SHLoadIndirectString](https://learn.microsoft.com/en-us/windows/win32/api/shlwapi/nf-shlwapi-shloadindirectstring) |
 | 第 6 階段設計 | [GetUserPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getuserpreferreduilanguages) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
