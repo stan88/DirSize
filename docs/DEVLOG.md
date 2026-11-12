@@ -1438,6 +1438,15 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - 它是否算在「元件」裡、是否被接受，我沒有查到 SignPath 的明確說明，要在申請時問。
   - 如果不被接受，至少可以只簽三個 exe（三個 exe 都是我們自己的 MIT 程式碼）。
 
+### 2026-11-13　SignPath 申請被拒；其他簽章方式
+
+- **結果**：SignPath Foundation 回信拒絕。理由是專案還沒有足夠的公開知名度，不是程式品質的問題。他們看的信號包括：GitHub 星星、fork、貢獻者；外部文章或討論（Reddit、Stack Overflow、YouTube 等）；機構支持；持續的開發活動。專案有更多使用者後可以重新申請，或改用 SignPath 的付費方案。
+- **其他方式**（Microsoft Learn 的簽章選項頁，以及 Store 的 MSI/EXE 套件需求頁）：
+  - 自簽憑證：免費，但文件註明只適合開發測試，或由企業自己管理信任的環境。
+  - Microsoft Store：MSIX 套件由 Microsoft 免費重新簽章；MSI/EXE 安裝檔不會重新簽章，必須由開發者用受信任 CA 的憑證簽章，也不接受自簽。DirSize 用 Inno Setup，要拿到免費簽章就得改包成 MSIX。MSIX 能不能安裝 Windows 服務和傳統右鍵選單，這兩頁沒有提到，沒有查證。
+  - 付費：Azure Artifact Signing 約每月 9.99 美元；OV 憑證每年 150–300 美元；EV 憑證每年 400 美元以上（皆為該頁所列）。Certum 的開源簽章憑證（發給個人）官方商店標示雲端版 €49 起。
+- **決定**（使用者）：暫時不簽章。README 中英版的「Code signing policy」改成「目前沒有簽章，之後重新申請」，保留角色和規則，重新申請時可以直接使用。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1755,5 +1764,8 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | CI | [actions/download-artifact](https://github.com/actions/download-artifact) |
 | 簽章 | [SignPath Foundation：OSS 專案的條件（Terms）](https://signpath.org/terms) |
 | 簽章 | [SignPath Foundation：申請](https://signpath.org/apply) |
+| 簽章 | [Code signing options for Windows app developers](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options) |
+| 簽章 | [MSI/EXE app package requirements（Microsoft Store）](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msi/app-package-requirements) |
+| 簽章 | [Certum：Open Source Code Signing on SimplySign](https://shop.certum.eu/open-source-code-signing-on-simplysign.html) |
 | 隱私 | [CreateNamedPipeW（PIPE_REJECT_REMOTE_CLIENTS）](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipew) |
 | CI | [Managing releases in a repository（草稿的 Publish release 在編輯頁）](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository) |

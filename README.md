@@ -93,10 +93,11 @@ translation, included unchanged; see [installer/lang/README.md](installer/lang/R
 
 ## Code signing policy
 
-Signing is being applied for under the SignPath Foundation's free program
-for open-source projects; 0.1.0 is not signed. Once accepted, releases are
+Releases are not code-signed for now. The SignPath Foundation's free program
+for open-source projects requires a project that is already widely known, so
+DirSize will apply again once it has more users. If accepted, releases will be
 signed with: Free code signing provided by [SignPath.io](https://signpath.io),
-certificate by [SignPath Foundation](https://signpath.org).
+certificate by [SignPath Foundation](https://signpath.org), under these rules:
 
 - Only files built by GitHub Actions from this repository's source are
   signed, and each release is approved by hand before signing.

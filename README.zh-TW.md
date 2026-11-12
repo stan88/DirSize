@@ -82,10 +82,10 @@ DirSize 是依據 Microsoft 公開文件撰寫的獨立實作。
 
 ## 程式碼簽章政策（Code signing policy）
 
-正在申請 SignPath Foundation 給開源專案的免費簽章；0.1.0 沒有簽章。
-通過後，發行的檔案會這樣簽署：Free code signing provided by
+發行的檔案目前沒有簽章。SignPath Foundation 給開源專案的免費簽章，要求專案已經有一定的知名度，
+所以等 DirSize 有更多使用者後再重新申請。通過後，發行的檔案會這樣簽署：Free code signing provided by
 [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org)
-（由 SignPath.io 免費提供簽章，憑證屬於 SignPath Foundation）。
+（由 SignPath.io 免費提供簽章，憑證屬於 SignPath Foundation），並遵守以下規則：
 
 - 只簽由 GitHub Actions 從這個 repo 的原始碼建置的檔案；每次發行都要先手動核准才會簽章。
 - 提交與審查（Committers and reviewers）：[stan88](https://github.com/stan88)
