@@ -1,0 +1,42 @@
+# Builds Release, runs the tests and makes the installer and the portable
+# zip, which are kept as the run's artifact. Free on a public repository
+# with the standard GitHub-hosted runners (docs/DEVLOG.md).
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # A fixed image, not windows-latest: it has Visual Studio 2022, CMake
+    # and Inno Setup 6.7 (actions/runner-images, Windows2025-Readme.md).
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package
+        run: .\scripts\package-installer.ps1 -NoBuild
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: DirSize
+          path: |
+            dist/DirSize-*-setup.exe
+            dist/DirSize-*-portable.zip
+          if-no-files-found: error
+          retention-days: 30

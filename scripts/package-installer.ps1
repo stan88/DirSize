@@ -16,7 +16,11 @@ param([switch]$NoBuild, [string]$Iscc)
 
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
-$cmake = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+# cmake.exe on PATH (the GitHub runner), else the copy in Visual Studio 2022.
+$cmake = Get-Command cmake.exe -ErrorAction SilentlyContinue | ForEach-Object Source | Select-Object -First 1
+if (-not $cmake) {
+    $cmake = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+}
 
 $match = Select-String -Path (Join-Path $root 'CMakeLists.txt') -Pattern 'project\(DirSize VERSION (\d+\.\d+\.\d+)'
 if (-not $match) { throw 'cannot find the version in CMakeLists.txt' }

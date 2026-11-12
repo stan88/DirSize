@@ -1388,6 +1388,15 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - 驗證：先手動刪除空資料夾，再安裝一次、解除安裝一次。這次記錄裡有 `Deleting directory: …\Program Files\DirSize`，資料夾也確實不見了。**推測證實，程式不需要修改。** 只有從舊的手動測試環境升級上來的機器，才會留下這個空資料夾。
 - **還沒驗證**：英文 Windows 上的安裝精靈；升級後快取是否保留、服務是否重新啟動；面板右鍵選單點外面會不會關閉、焦點會不會回到檔案總管。在這台開發機上，從背景開啟的檔案總管沒有讓面板出現（追蹤記錄是空的），原因沒有查明，留到 VM 上確認。標題列、工作列和高 DPI 下的顯示還沒有實際看過。
 
+### 2026-11-12　第 6 階段：GitHub Actions 自動建置
+
+- **費用**：GitHub 的計費文件寫明，公開 repo 使用標準 GitHub-hosted runner 免費，也不算進每月的額度；要付費的是私人 repo 和 larger runner。DirSize 是公開 repo，用標準 runner。
+- **順序**：先做 CI，再申請簽章。SignPath 的免費開源簽章只簽 CI 從原始碼建出來的檔案，所以 CI 是申請的前提。
+- `.github/workflows/build.yml`：push 到 main、PR、手動觸發時執行。步驟依序是設定、建置 Release、ctest、`package-installer.ps1 -NoBuild`。安裝程式和免安裝 zip 存成這次執行的 artifact，保留 30 天。
+- runner 固定用 `windows-2025`，不用 `windows-latest`，以免標籤換成別的映像。官方的軟體清單（Windows2025-Readme.md，映像版本 20261101）列有 Visual Studio Enterprise 2022 17.14、CMake 3.31.6（在 PATH 上）、Inno Setup 6.7.1、Windows SDK 10.0.26100。
+- `package-installer.ps1` 原本把 cmake.exe 寫死成 VS Community 的路徑，runner 上的是 Enterprise 版。改成先用 PATH 上的 cmake.exe，找不到才用原來的路徑。在本機重跑一次，安裝程式和 zip 都正常產生。
+- 使用的 action：`actions/checkout@v7`、`actions/upload-artifact@v7`（各自 releases 的最新版是 v7.0.1、v7.0.2）。workflow 的權限只開 `contents: read`。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1690,3 +1699,7 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |
+| CI | [GitHub Actions billing（公開 repo 的標準 runner 免費）](https://docs.github.com/en/billing/concepts/product-billing/github-actions) |
+| CI | [Windows Server 2025 runner 映像的軟體清單](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md) |
+| CI | [actions/checkout](https://github.com/actions/checkout) |
+| CI | [actions/upload-artifact](https://github.com/actions/upload-artifact) |
