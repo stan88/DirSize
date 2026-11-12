@@ -4,37 +4,85 @@
 
 A fast, low-resource tool for Windows that shows the size of every folder.
 
-> Status: early development — nothing usable yet.
+> Status: 0.1.0, not released yet. The installer builds and installs, but no
+> release has been published; build it yourself (see below).
 
-## Goals
+## What it does
 
-- **Fast**: on NTFS volumes, build the index from the Master File Table and keep it
-  current with the USN change journal, instead of walking every directory.
-- **Light**: compact in-memory folder tree, background (low-priority) I/O, a persisted
-  cache so a reboot does not trigger a full rescan.
-- **Works everywhere**: other file systems (exFAT, FAT32, removable, network drives)
-  fall back to directory enumeration plus change notifications. Which drive types are
-  scanned is configurable.
+- **Window**: a folder tree on the left; on the right, the selected folder's
+  subfolders and files with their size, size on disk, share of the total and
+  number of files. Sort by any column, resize the columns.
+- **File Explorer panel**: select a folder in File Explorer and a narrow panel
+  beside the window lists the sizes of its subfolders.
+- **Context menu**: "Open with DirSize" on folders and drives.
+- Follows the Windows theme (light, dark, high contrast) and display language
+  (English, Traditional Chinese; others can be added, see
+  [lang/README.md](lang/README.md)).
 
-## Planned components
+## How it works
 
-| Component | Role |
-|---|---|
-| Indexer core | Volume scanning, folder tree, change tracking, cache persistence |
-| Service | Runs the indexer in the background, answers queries over a named pipe |
-| CLI | Command-line queries and benchmarks |
-| Front-end | Shows folder sizes next to File Explorer |
+- **Service** (`dirsize-service.exe`, runs as LocalSystem): indexes the fixed
+  NTFS volumes from the Master File Table and keeps the index current with the
+  USN change journal, so sizes are ready without walking every folder. The
+  index is saved to `C:\ProgramData\DirSize` so a restart does not need a full
+  rescan. It runs at low priority with a CPU cap.
+- **Front end** (`dirsize.exe`, the window and the panel): asks the service.
+  Where the service has no index (other file systems, network drives, or no
+  service installed) it scans the folders itself, which is slower.
+- **CLI** (`dirsize-cli.exe`): queries and measurements; run it without
+  arguments for its commands.
+
+## Requirements
+
+Windows 10 version 1809 or later, x64.
+
+## Installing
+
+Run `DirSize-<version>-setup.exe` (administrator rights are needed for the
+service). The installer offers, all checked by default:
+
+- "Open with DirSize" in the File Explorer context menu (all users)
+- Start the File Explorer panel when you sign in
+- Show the Share column
+
+These can be changed later in the program's "⋯" menu (the panel's right-click
+menu has the Share column too).
+
+The installer is **not code-signed** yet, so Windows shows "Unknown publisher"
+and SmartScreen may warn when it is downloaded.
+
+Uninstalling removes the service, the program files, the context menu and the
+index cache, and the sign-in entry of the account that uninstalls. Other
+per-user settings (`HKEY_CURRENT_USER\Software\DirSize`) are left in place.
+
+A portable zip with only `dirsize.exe` is also built; without the service it
+always scans folders itself.
 
 ## Building
 
 Requires Visual Studio 2022 with the **Desktop development with C++** workload
-(MSVC, Windows SDK, CMake). Build instructions will follow once the first component lands.
+(MSVC, Windows SDK, CMake). From Git Bash:
+
+```bash
+CMAKE="/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+"$CMAKE" -S . -B build -G "Visual Studio 17 2022" -A x64
+"$CMAKE" --build build --config Release
+```
+
+Tests: `ctest --test-dir build -C Release` (the `ctest.exe` next to `cmake.exe`).
+
+Installer: install [Inno Setup](https://jrsoftware.org/isinfo.php) 6.5 or
+later, then run `scripts\package-installer.ps1` in PowerShell. It builds
+Release and writes the installer and the portable zip to `dist\`.
 
 ## Provenance
 
 DirSize is an independent implementation written from public Microsoft documentation.
 It is inspired by the idea of the discontinued *Folder Size for Windows* (SourceForge),
 but contains none of its code. See [docs/DEVLOG.md](docs/DEVLOG.md).
+
+The installer's Traditional Chinese messages are the official Inno Setup
+translation, included unchanged; see [installer/lang/README.md](installer/lang/README.md).
 
 ## Contributing
 

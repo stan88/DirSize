@@ -4,36 +4,76 @@
 
 Windows 上快速、低資源的資料夾大小工具，顯示每個資料夾的大小。
 
-> 狀態：早期開發中，目前還沒有可用的版本。
+> 狀態：0.1.0，尚未發行。安裝程式已經可以建置和安裝，但還沒有發布正式版本，
+> 需要自行建置（見下方）。
 
-## 目標
+## 功能
 
-- **快**：NTFS 磁碟區從主檔案表（MFT）建立索引，再用 USN 變更日誌保持同步，
-  不必逐一走訪每個目錄。
-- **省資源**：記憶體中的資料夾樹採緊湊結構，背景（低優先權）I/O，
-  並把快取存到磁碟，重開機後不必整個重新掃描。
-- **各種磁碟都能用**：其他檔案系統（exFAT、FAT32、卸除式磁碟、網路磁碟）
-  改用逐目錄列舉加上變更通知。要掃描哪些類型的磁碟可以自行設定。
+- **獨立視窗**：左邊是資料夾樹；右邊列出選取資料夾的子資料夾和檔案，
+  包含大小、磁碟用量、佔總量的比例和檔案數。可以依任一欄排序，也可以調整欄寬。
+- **檔案總管面板**：在檔案總管選取一個資料夾，旁邊的窄面板就會列出它各個子資料夾的大小。
+- **右鍵選單**：資料夾和磁碟機上的「用 DirSize 開啟」。
+- 跟著 Windows 的佈景主題（淺色、深色、高對比）和顯示語言
+  （英文、繁體中文；可以新增其他語言，見 [lang/README.md](lang/README.md)）。
 
-## 規劃中的元件
+## 運作方式
 
-| 元件 | 用途 |
-|---|---|
-| 索引核心 | 磁碟區掃描、資料夾樹、變更追蹤、快取存檔 |
-| 服務 | 在背景執行索引核心，透過 named pipe 回應查詢 |
-| CLI | 命令列查詢與效能測試 |
-| 前端 | 在檔案總管旁顯示資料夾大小 |
+- **服務**（`dirsize-service.exe`，以 LocalSystem 執行）：從主檔案表（MFT）
+  為固定式 NTFS 磁碟區建立索引，再用 USN 變更日誌保持同步，
+  不必逐一走訪資料夾就能提供大小。索引存在 `C:\ProgramData\DirSize`，
+  重新開機後不必整個重新掃描。服務以低優先權執行，並限制 CPU 用量。
+- **前端**（`dirsize.exe`，獨立視窗和面板）：向服務查詢。服務沒有索引的地方
+  （其他檔案系統、網路磁碟，或沒有安裝服務），就自己逐目錄掃描，速度比較慢。
+- **CLI**（`dirsize-cli.exe`）：查詢和效能量測；不帶參數執行就會列出指令。
+
+## 系統需求
+
+Windows 10 1809 以上，x64。
+
+## 安裝
+
+執行 `DirSize-<版本>-setup.exe`（安裝服務需要系統管理員權限）。
+安裝程式提供下列選項，預設全部勾選：
+
+- 在檔案總管的右鍵選單加入「用 DirSize 開啟」（所有使用者）
+- 登入時自動啟動檔案總管面板
+- 顯示比例欄
+
+之後可以在程式的「⋯」選單修改（比例欄也可以在面板的右鍵選單切換）。
+
+安裝程式**還沒有數位簽章**，所以 Windows 會顯示「未知的發行者」，
+從網路下載時 SmartScreen 也可能跳出警告。
+
+解除安裝會移除服務、程式檔案、右鍵選單和索引快取，以及執行解除安裝的
+那個帳號的登入自動啟動設定。其他個人設定（`HKEY_CURRENT_USER\Software\DirSize`）會保留。
+
+另外也會產生只含 `dirsize.exe` 的免安裝 zip；沒有服務時，它一律自己逐目錄掃描。
 
 ## 建置
 
 需要 Visual Studio 2022，並安裝「**使用 C++ 的桌面開發**」工作負載
-（MSVC、Windows SDK、CMake）。第一個元件完成後會補上建置說明。
+（MSVC、Windows SDK、CMake）。在 Git Bash 執行：
+
+```bash
+CMAKE="/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+"$CMAKE" -S . -B build -G "Visual Studio 17 2022" -A x64
+"$CMAKE" --build build --config Release
+```
+
+測試：`ctest --test-dir build -C Release`（`ctest.exe` 和 `cmake.exe` 在同一個資料夾）。
+
+安裝程式：先安裝 [Inno Setup](https://jrsoftware.org/isinfo.php) 6.5 以上，
+再用 PowerShell 執行 `scripts\package-installer.ps1`。它會建置 Release，
+並把安裝程式和免安裝 zip 輸出到 `dist\`。
 
 ## 來源聲明
 
 DirSize 是依據 Microsoft 公開文件撰寫的獨立實作。
 構想來自已停止維護的 *Folder Size for Windows*（SourceForge），
 但不含它的任何程式碼。詳見 [docs/DEVLOG.md](docs/DEVLOG.md)。
+
+安裝程式的繁體中文訊息是 Inno Setup 的官方翻譯，原封不動收錄，
+詳見 [installer/lang/README.md](installer/lang/README.md)。
 
 ## 參與開發
 
