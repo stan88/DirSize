@@ -14,9 +14,10 @@ permissions:
 
 jobs:
   build:
-    # A fixed image, not windows-latest: it has Visual Studio 2022, CMake
-    # and Inno Setup 6.7 (actions/runner-images, Windows2025-Readme.md).
-    runs-on: windows-2025
+    # The image with Visual Studio 2022, CMake and Inno Setup 6.7
+    # (actions/runner-images, Windows2022-Readme.md). windows-2025 and
+    # windows-latest carry Visual Studio 2026 only (docs/DEVLOG.md).
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v7
 

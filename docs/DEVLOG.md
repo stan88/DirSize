@@ -1393,7 +1393,10 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 - **費用**：GitHub 的計費文件寫明，公開 repo 使用標準 GitHub-hosted runner 免費，也不算進每月的額度；要付費的是私人 repo 和 larger runner。DirSize 是公開 repo，用標準 runner。
 - **順序**：先做 CI，再申請簽章。SignPath 的免費開源簽章只簽 CI 從原始碼建出來的檔案，所以 CI 是申請的前提。
 - `.github/workflows/build.yml`：push 到 main、PR、手動觸發時執行。步驟依序是設定、建置 Release、ctest、`package-installer.ps1 -NoBuild`。安裝程式和免安裝 zip 存成這次執行的 artifact，保留 30 天。
-- runner 固定用 `windows-2025`，不用 `windows-latest`，以免標籤換成別的映像。官方的軟體清單（Windows2025-Readme.md，映像版本 20261101）列有 Visual Studio Enterprise 2022 17.14、CMake 3.31.6（在 PATH 上）、Inno Setup 6.7.1、Windows SDK 10.0.26100。
+- runner 用 `windows-2022`。第一次用 `windows-2025`，Configure 失敗：`Generator Visual Studio 17 2022 could not find any instance of Visual Studio.`
+  - 原因：我看的是 Windows2025-Readme.md（有 VS 2022），沒有對照標籤。runner-images 的 README 寫明 `windows-latest`、`windows-2025` 都指向 **Windows Server 2025 with Visual Studio 2026** 映像（Windows2025-VS2026-Readme.md；公告 runner-images #14017，2026 年 6 月起）。
+  - 改用 `windows-2022`：它的軟體清單（Windows2022-Readme.md，映像版本 20261101）有 Visual Studio Enterprise 2022 17.14、CMake 3.31.6（在 PATH 上）、Inno Setup 6.7.1、Windows SDK 10.0.26100，和專案規定的 VS 2022 一致。
+  - 這個標籤哪天退役，再改用 VS 2026 的 generator。
 - `package-installer.ps1` 原本把 cmake.exe 寫死成 VS Community 的路徑，runner 上的是 Enterprise 版。改成先用 PATH 上的 cmake.exe，找不到才用原來的路徑。在本機重跑一次，安裝程式和 zip 都正常產生。
 - 使用的 action：`actions/checkout@v7`、`actions/upload-artifact@v7`（各自 releases 的最新版是 v7.0.1、v7.0.2）。workflow 的權限只開 `contents: read`。
 
@@ -1703,3 +1706,6 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | CI | [Windows Server 2025 runner 映像的軟體清單](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md) |
 | CI | [actions/checkout](https://github.com/actions/checkout) |
 | CI | [actions/upload-artifact](https://github.com/actions/upload-artifact) |
+| CI | [runner-images README（標籤對應的映像）](https://github.com/actions/runner-images/blob/main/README.md) |
+| CI | [Windows Server 2022 runner 映像的軟體清單](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md) |
+| CI | [runner-images #14017：windows-latest／windows-2025 改用 VS 2026 映像](https://github.com/actions/runner-images/issues/14017) |
