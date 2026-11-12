@@ -75,6 +75,12 @@ Installer: install [Inno Setup](https://jrsoftware.org/isinfo.php) 6.5 or
 later, then run `scripts\package-installer.ps1` in PowerShell. It builds
 Release and writes the installer and the portable zip to `dist\`.
 
+GitHub Actions (`.github/workflows/build.yml`) does the same on every push
+and pull request. To release: set `project(VERSION)` in `CMakeLists.txt`
+(the only place the version is set), commit, and push the tag `v<version>`.
+The build stops if the tag and `CMakeLists.txt` disagree; otherwise it
+creates a draft release with the two files, published by hand.
+
 ## Provenance
 
 DirSize is an independent implementation written from public Microsoft documentation.

@@ -1,11 +1,16 @@
 # Builds Release, runs the tests and makes the installer and the portable
 # zip, which are kept as the run's artifact. Free on a public repository
 # with the standard GitHub-hosted runners (docs/DEVLOG.md).
+#
+# Releasing: set project(VERSION) in CMakeLists.txt, commit, then push the
+# tag v<that version>. The build checks that the two agree, and the release
+# job creates a draft GitHub Release with the two files.
 name: Build
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -20,6 +25,19 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v7
+
+      # On a tag, the tag must name the version in CMakeLists.txt, the one
+      # place the version is set (the exe files, the installer, the names).
+      - name: Check the tag
+        if: github.ref_type == 'tag'
+        run: |
+          $match = Select-String -Path CMakeLists.txt -Pattern 'project\(DirSize VERSION (\d+\.\d+\.\d+)'
+          if (-not $match) { throw 'cannot find the version in CMakeLists.txt' }
+          $version = $match.Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_NAME -cne "v$version") {
+            throw "tag $env:GITHUB_REF_NAME does not match project(VERSION) $version in CMakeLists.txt"
+          }
+          "tag $env:GITHUB_REF_NAME matches CMakeLists.txt"
 
       - name: Configure
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -41,3 +59,31 @@ jobs:
             dist/DirSize-*-portable.zip
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    # Creating a release needs contents: write; only this job has it.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: DirSize
+          path: dist
+
+      # A draft: it is published by hand on the Releases page after a look.
+      # The notes are .github/release-notes.md followed by the generated list
+      # of changes.
+      - name: Create the release (draft)
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --draft --verify-tag
+          --title "DirSize ${GITHUB_REF_NAME#v}"
+          --notes-file .github/release-notes.md
+          --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

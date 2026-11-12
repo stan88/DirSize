@@ -1399,6 +1399,18 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - 這個標籤哪天退役，再改用 VS 2026 的 generator。
 - `package-installer.ps1` 原本把 cmake.exe 寫死成 VS Community 的路徑，runner 上的是 Enterprise 版。改成先用 PATH 上的 cmake.exe，找不到才用原來的路徑。在本機重跑一次，安裝程式和 zip 都正常產生。
 - 使用的 action：`actions/checkout@v7`、`actions/upload-artifact@v7`（各自 releases 的最新版是 v7.0.1、v7.0.2）。workflow 的權限只開 `contents: read`。
+- 第二次（`windows-2022`）全部通過：建置、四組 ctest、打包（Inno Setup 6.7.1 也能編譯從 main 取得的繁中 .isl）、上傳 artifact（約 2.3 MB）。
+
+### 2026-11-12　第 6 階段：推 tag 自動發行
+
+- **版本號只在一個地方設定**：`CMakeLists.txt` 的 `project(VERSION)`。exe 的版本資訊、安裝程式的版本和兩個檔名都從這裡來，tag 只負責觸發發行。
+  - 另一種做法是由 tag 決定版本，但那樣在本機建置時會拿不到正確的版本號，所以不採用。
+- **檢查**：推 `v*` tag 時，build job 第一步比對 tag 和 `v<project(VERSION)>`，大小寫要完全相同，不一致就停止。在本機用假的 `GITHUB_REF_NAME` 測過：`v0.1.0` 通過，`v0.2.0` 失敗。
+- **release job**：只在 tag 時執行，跑在 ubuntu-latest 上，用 `actions/download-artifact@v8` 取回 build 的產物，再用 runner 預裝的 `gh release create` 建立 Release。
+  - 參數：`--draft --verify-tag --notes-file .github/release-notes.md --generate-notes`。
+  - 草稿要在 Releases 頁面看過之後手動發布。
+- **權限**：只有 release job 有 `contents: write`（官方文件：`contents: write` allows the action to create a release），其他維持 `contents: read`。
+- **觸發**：`push` 下面同時寫 `branches` 和 `tags`。官方文件說只寫其中一種時，另一種推送不會觸發 workflow。
 
 ## 參考資料
 
@@ -1709,3 +1721,9 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | CI | [runner-images README（標籤對應的映像）](https://github.com/actions/runner-images/blob/main/README.md) |
 | CI | [Windows Server 2022 runner 映像的軟體清單](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md) |
 | CI | [runner-images #14017：windows-latest／windows-2025 改用 VS 2026 映像](https://github.com/actions/runner-images/issues/14017) |
+| CI | [Using GitHub CLI in workflows（預裝 gh、GH_TOKEN）](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-github-cli) |
+| CI | [gh release create（--draft、--verify-tag、--notes-file、--generate-notes）](https://cli.github.com/manual/gh_release_create) |
+| CI | [Workflow syntax：on.push 的 branches／tags、permissions（contents: write）](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax) |
+| CI | [Variables（GITHUB_REF_NAME、GITHUB_REF_TYPE）](https://docs.github.com/en/actions/reference/workflows-and-actions/variables) |
+| CI | [REST：Create a release](https://docs.github.com/en/rest/releases/releases) |
+| CI | [actions/download-artifact](https://github.com/actions/download-artifact) |

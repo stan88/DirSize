@@ -66,6 +66,11 @@ CMAKE="/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/Commo
 再用 PowerShell 執行 `scripts\package-installer.ps1`。它會建置 Release，
 並把安裝程式和免安裝 zip 輸出到 `dist\`。
 
+每次 push 和 PR，GitHub Actions（`.github/workflows/build.yml`）都會做同樣的事。
+發行新版：改 `CMakeLists.txt` 的 `project(VERSION)`（版本號只在這裡設定），
+commit 後推 `v<版本>` tag。tag 和 `CMakeLists.txt` 不一致時建置會停止；
+一致就建立附上兩個檔案的草稿 Release，再手動發布。
+
 ## 來源聲明
 
 DirSize 是依據 Microsoft 公開文件撰寫的獨立實作。
