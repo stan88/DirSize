@@ -4,8 +4,7 @@
 
 Windows 上快速、低資源的資料夾大小工具，顯示每個資料夾的大小。
 
-> 狀態：0.1.0，尚未發行。安裝程式已經可以建置和安裝，但還沒有發布正式版本，
-> 需要自行建置（見下方）。
+> 狀態：0.1.0，第一個發行版本。請到 [Releases](https://github.com/stan88/DirSize/releases) 下載。
 
 ## 功能
 
@@ -32,7 +31,8 @@ Windows 10 1809 以上，x64。
 
 ## 安裝
 
-執行 `DirSize-<版本>-setup.exe`（安裝服務需要系統管理員權限）。
+從 [Releases](https://github.com/stan88/DirSize/releases) 下載 `DirSize-<版本>-setup.exe` 並執行
+（安裝服務需要系統管理員權限）。
 安裝程式提供下列選項，預設全部勾選：
 
 - 在檔案總管的右鍵選單加入「用 DirSize 開啟」（所有使用者）

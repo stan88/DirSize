@@ -4,8 +4,8 @@
 
 A fast, low-resource tool for Windows that shows the size of every folder.
 
-> Status: 0.1.0, not released yet. The installer builds and installs, but no
-> release has been published; build it yourself (see below).
+> Status: 0.1.0, the first release. Download it from
+> [Releases](https://github.com/stan88/DirSize/releases).
 
 ## What it does
 
@@ -38,8 +38,9 @@ Windows 10 version 1809 or later, x64.
 
 ## Installing
 
-Run `DirSize-<version>-setup.exe` (administrator rights are needed for the
-service). The installer offers, all checked by default:
+Download `DirSize-<version>-setup.exe` from
+[Releases](https://github.com/stan88/DirSize/releases) and run it
+(administrator rights are needed for the service). The installer offers, all checked by default:
 
 - "Open with DirSize" in the File Explorer context menu (all users)
 - Start the File Explorer panel when you sign in
