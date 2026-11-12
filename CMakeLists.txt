@@ -106,6 +106,8 @@ add_dependencies(dirsize_ui_core dirsize_lang)
 # Phase 5 front end: window pieces (theme needs C++/WinRT: WindowsApp.lib).
 add_library(dirsize_ui STATIC
     src/ui/strings.cpp
+    src/ui/settings.cpp
+    src/ui/tip_window.cpp
     src/ui/theme.cpp
     src/ui/size_list.cpp
     src/ui/scroll_strip.cpp

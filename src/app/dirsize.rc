@@ -5,3 +5,7 @@
 #include <winres.h>
 #include "ui/string_ids.h"
 
+// The application icon (scripts/make-icon.py). The only icon in the file,
+// so File Explorer has no other to choose. main.cpp loads it by ID 1.
+1 ICON "dirsize.ico"
+

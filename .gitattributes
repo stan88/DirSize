@@ -1,0 +1,4 @@
+# Third-party files kept byte for byte as published (installer/lang/README.md
+# lists their SHA-256): no line-ending conversion.
+installer/lang/ChineseTraditional.isl -text
+installer/lang/INNO-SETUP-LICENSE.txt -text

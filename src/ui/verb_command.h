@@ -10,6 +10,10 @@ namespace dirsize::ui {
 // asks for quotation marks around "%1".
 std::wstring VerbCommandLine(const std::wstring& exe);
 
+// "\"<exe>\" --panel": the command that starts the Explorer panel at sign-in
+// (shell_verb.h, SetPanelAutostart).
+std::wstring PanelCommandLine(const std::wstring& exe);
+
 // The folder argument as the program receives it. For a drive Explorer
 // passes "C:\", so the command line holds "C:\"" -- an odd number of
 // backslashes before a quotation mark, which the documented parsing rules

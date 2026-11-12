@@ -2,7 +2,7 @@
 //
 //   dirsize-service             run under the service control manager
 //   dirsize-service console     run in this console until Ctrl+C (tests)
-//   dirsize-service install     copy to Program Files\DirSize and register (elevated)
+//   dirsize-service install     copy to Program Files\DirSize (unless run from there) and register (elevated)
 //   dirsize-service uninstall   stop, unregister, remove the copy (elevated)
 
 #include <windows.h>
@@ -141,7 +141,9 @@ int Install() {
     }
     wchar_t self[MAX_PATH] = {};
     if (GetModuleFileNameW(nullptr, self, MAX_PATH) == 0) return Fail(L"GetModuleFileNameW");
-    if (!CopyFileW(self, target.c_str(), FALSE)) return Fail(L"copy the executable");
+    // The installer has already put the file there: only register it.
+    const bool inPlace = CompareStringOrdinal(self, -1, target.c_str(), -1, TRUE) == CSTR_EQUAL;
+    if (!inPlace && !CopyFileW(self, target.c_str(), FALSE)) return Fail(L"copy the executable");
 
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE);
     if (scm == nullptr) return Fail(L"OpenSCManagerW (run elevated)");

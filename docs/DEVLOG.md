@@ -1225,6 +1225,159 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - 還沒驗證：實際在檔案總管的右鍵選單裡看到 `MUIVerb` 的文字。留到安裝程式做好後，在中文機和英文 VM 各看一次。
   - `SHLoadIndirectString` 文件提到 MUI 快取：資源內容改了但 ID 沒變時，快取不會更新，可以在後面加 `;v2`。翻譯文字日後修改時要留意。
 
+### 2026-11-11　第 6 階段：面板自動啟動、安裝程式腳本（尚未編譯）
+
+- **程式裡的設定**（設計 7.2 A）：
+  - 「⋯」選單新增「登入時自動啟動檔案總管面板」：寫在 HKCU 的 `Run`，值名稱 `DirSizePanel`，內容是 `"<執行檔>" --panel`。依「Run and RunOnce Registry Keys」，命令超過 260 字元就不寫入、回報錯誤。
+  - 右鍵選單如果已經由安裝程式寫在 HKLM，選單項目改顯示「由安裝程式設定」，不能在程式裡切換。
+  - 新增兩條字串（兩個語系檔都有）。ui-tests 272 項、4 組測試全過。這兩項的畫面還沒有請使用者看過。
+- **服務**：`dirsize-service install` 如果本身已經在 Program Files 的安裝位置，就只註冊、不複製（原本會複製到自己身上而失敗）。這個路徑要等安裝程式能編譯後才驗證得到。
+- **安裝程式腳本** `installer/dirsize.iss`（Inno Setup），依官方說明文件寫成：
+  - 需要系統管理員權限；只允許 x64 相容的系統；最低 Windows 10 1809（`MinVersion=10.0.17763`）。
+  - 安裝位置固定在 Program Files 下的 `DirSize`，不讓使用者選：服務以 LocalSystem 執行，執行檔必須在一般使用者不能寫入的位置，而且服務是從這個固定位置註冊的。
+  - 語言：原本寫了英文和繁體中文（`ChineseTraditional.isl`），編譯時發現這個檔不存在。結果和決定見下一則。
+  - 右鍵選單是可勾選的工作，寫在 HKLM 的 `Directory` 和 `Drive`：預設值是英文，加上 `MUIVerb`（見上一則）。重新安裝時取消勾選，會把機碼刪掉。
+  - 換檔案之前（`PrepareToInstall`）：用 `taskkill /IM dirsize.exe /F` 關掉執行中的視窗和面板（它們沒有未儲存的資料；面板沒有關閉按鈕），再用舊的 `dirsize-service uninstall` 停止並移除服務，檔案才換得掉。因此不使用 Inno Setup 內建的關閉應用程式功能（`CloseApplications=no`）。
+  - 檔案複製完：執行 `dirsize-service install`，成功就 `sc start DirSize`；失敗會顯示訊息，但安裝繼續（沒有服務時，程式仍可用自己讀取的方式運作）。
+  - 最後一頁可以勾選開啟 DirSize、啟動面板。依文件，這類項目預設用啟動安裝程式的原使用者身分執行。
+  - 移除：關掉程式 → 移除服務 → 刪除檔案和登錄 → 刪除 `ProgramData` 下的 `DirSize` 資料夾（7.4 A）。
+  - 輸出檔名用 `DirSize-<版本>-setup.exe`。文件提醒不要取名 `setup.exe`：Windows 會對這個檔名套用相容性處理，載入額外的 DLL。
+- **打包腳本** `scripts/package-installer.ps1`：從 `CMakeLists.txt` 讀版本號，檢查三個執行檔的版本資訊和它一致，再呼叫 `ISCC.exe`，另外產生只含 `dirsize.exe` 的免安裝 zip。輸出到 `dist\`（不進 git）。
+- **已知的限制**：各使用者自己開的「登入時自動啟動面板」寫在各自的 HKCU，移除程式清不到其他帳號的這一項。移除後，那一項會指向不存在的檔案。
+- **還沒做**：這台建置機沒有安裝 Inno Setup，腳本**還沒編譯過，也沒執行過**。裝好後要先編譯，再到 VM 做設計第 8 節第 5 步的驗證。
+
+### 2026-11-12　第 6 階段：安裝程式第一次編譯
+
+- 用 winget 安裝 Inno Setup 6.7.3（`JRSoftware.InnoSetup`，安裝在使用者的 `AppData\Local\Programs` 下；`package-installer.ps1` 本來就會找這個位置）。
+- 官方安裝包的 `Languages\` 資料夾**沒有** `ChineseTraditional.isl`。繁體中文只出現在 Inno Setup 網站的非官方翻譯，是第三方譯者的作品，授權沒有確認。
+- **決定**：安裝精靈只用英文，拿掉 `zhtw` 語言和它的自訂訊息。程式本身和右鍵選單（`MUIVerb`）仍然依使用者的語言顯示，不受影響。
+- 拿掉 `zhtw` 後，ISCC 編譯成功，`[Code]`、`[Registry]`、`[Files]`、版本資訊都沒有錯誤。
+
+### 2026-11-12　第 6 階段：程式圖示
+
+- 原本沒有任何圖示：exe、視窗、捷徑、「新增或移除程式」都是 Windows 預設的圖示，安裝檔則是 Inno Setup 的圖示。
+- 圖案由使用者選定：資料夾上面疊一個圓餅圖。原創，用 `scripts/make-icon.py`（Pillow）畫出來，輸出 `src/app/dirsize.ico`。這個 .ico 也放進 git，建置時不需要 Python。
+- 尺寸：16、20、24、32、40、48、64、256。包含 Microsoft 對 Win32 建議的最少尺寸（16、24、32、48、256），以及 Inno Setup 建議的 64。每個尺寸都用 16 倍大小畫好再縮小。24 px 以下的外框加粗。
+- `dirsize.rc`：`1 ICON "dirsize.ico"`。exe 裡只有這一個圖示資源。文件沒有寫檔案總管選哪一個圖示當 exe 圖示，只有一個就不必管這個規則。
+- 主視窗類別的 `hIcon`／`hIconSm` 用 `LoadImageW` 載入，尺寸取 `GetSystemMetrics` 的 `SM_CXICON` 和 `SM_CXSMICON`。面板是 `WS_EX_TOOLWINDOW`，不會出現在工作列，所以不設定圖示。
+- **出錯過一次**：第一版用 `LoadIconMetric`。安裝到 VM 後一啟動就出現「序數 380 無法在動態連結程式庫 …dirsize.exe 上找到」。用 dumpbin 查，`dirsize.exe` 是用**序數 380** 從 `COMCTL32.dll` 匯入這個函式。這個序數只有第 6 版 comctl32 才有，而我們的 manifest 沒有要求第 6 版，系統載入的是舊版，所以找不到。`LoadIconMetric` 的文件頁沒有提到這個條件。改用 user32 的 `LoadImageW`，不再連結 comctl32。重新建置後確認：沒有 COMCTL32 匯入；視窗開得起來；類別上的大小圖示 handle 都不是 0。當初沒有先實際啟動一次就打包，以後打包前要先啟動一次。
+- 安裝程式：`SetupIconFile` 指向同一個 .ico。
+- 驗證：建置成功，ui-tests 272 項全過。從 `dirsize.exe` 和 `DirSize-0.1.0-setup.exe` 用 `ExtractAssociatedIcon` 取出的都是新圖示。
+
+### 2026-11-12　第 6 階段：安裝時列出所有預設選項
+
+- 起因：使用者在 VM 上裝好後，面板沒有出現。原因是「現在啟動面板」預設不勾，「登入時自動啟動面板」也只能裝完在程式裡開。使用者要求：程式的預設選項都要在安裝時列出，並且預設啟用。
+- 安裝程式的「工作」頁現在有兩項，都預設勾選：
+  - 右鍵選單：沿用原本的設定，寫在 HKLM。
+  - **登入時自動啟動面板**：新增。
+- 自動啟動仍然寫在各使用者自己的 HKCU（設計 7.2）。新增 `dirsize.exe --set-autostart`：開啟這個設定後就結束，不開視窗，結束碼是 Win32 錯誤碼。安裝程式在 `[Run]` 用 `runasoriginaluser` 執行它。依 Inno Setup 文件，這個旗標會用「啟動安裝程式的那位使用者」的身分執行，不用核准 UAC 的管理員身分。文件也寫了例外：如果安裝程式是用「以系統管理員身分執行」啟動的，這個旗標就沒有作用。
+- 參數的判斷改成只比對第一個參數（`CommandLineToArgvW`），不用子字串搜尋，以免資料夾名稱裡剛好有同樣的文字。舊的 `--check`、`--panel` 還是用子字串搜尋，這次沒有改。
+- 完成頁的「現在啟動面板」改成預設勾選。
+- 重新安裝時，依 Inno 的 `UsePreviousTasks`（預設 yes），工作頁會沿用上次的勾選。
+- 移除程式時，加上 `reg delete` 刪掉**執行移除程式的那個帳號**的 HKCU `DirSizePanel`。使用者自己核准 UAC 時，這就是使用者本人的帳號。用另一個管理員帳密提權時，刪的是那個管理員帳號的設定，對其他帳號沒有作用，這仍然是已知限制。
+- 本機驗證：`--set-autostart` 的結束碼是 0，HKCU Run 寫入 `"<exe>" --panel`，沒有開出視窗。測試後已還原登錄。一般啟動正常。ui-tests 272 項通過。VM 上還沒驗證。
+- （同日稍後）`--set-autostart` 改成通用的 `--setting <autostart|share> <on|off>`，見下一則。工作取消勾選時會寫入 off，所以重新安裝時取消勾選也會生效。
+
+### 2026-11-12　第 6 階段：「顯示比例」選項；最右欄被切掉的修正
+
+- **使用者要求**：比例欄（長條＋百分比）要不要顯示，改成選項。決定：
+  - 主視窗和面板一起套用。
+  - 預設顯示。
+  - 開關放在主視窗的「⋯」選單，面板按右鍵也有同一項。
+- **設定**：HKCU `Software\DirSize` 的 `ShowShare`（DWORD），沒有這個值就是顯示。程式在 `src/ui/settings.h/.cpp`。
+- **欄位**：`WindowColumns`／`PanelColumns`（`list_model`，純函式）。如果目前依「比例」排序，隱藏比例欄後改成依「磁碟用量」排序。兩者的排序依據相同，所以順序不變（`FallbackSortColumn`）。ui-tests 新增 16 項，共 288 項。
+- **即時更新**：主視窗和面板是不同的行程。改設定後，用 `RegisterWindowMessage("DirSize.SettingsChanged")` 加上 `PostMessage(HWND_BROADCAST)` 通知所有頂層視窗。面板是沒有擁有者的 popup，依文件會收到。本機實測：主視窗不用重開，比例欄就會出現或消失。面板的部分還沒實測。
+- **面板右鍵選單**：面板本身不取得焦點（`WS_EX_NOACTIVATE`）。依 TrackPopupMenu 的說明，選單的擁有者不在前景時，點選單外面不會關閉選單。所以顯示選單前先把面板帶到前景，結束後把前景還給檔案總管。這個行為還沒在實機上看過。
+- **安裝程式**：新增「顯示比例」工作，預設勾選。安裝程式用 `--setting share on|off` 以原使用者身分寫入。
+- **最右欄被切掉**：
+  - 使用者的面板截圖裡「99.6%」右邊被切掉。本機主視窗的「檔案數」欄也一樣（「25」只剩一半），但標題列沒有被切。
+  - 原因：自繪捲動條 `ScrollStrip::Paint` 在捲動條沒有出現時，仍然把自己那一條（12 DIP）塗成背景色，蓋住最右欄文字的最後幾個像素。標題列不在那一條的範圍內，所以標題沒事。
+  - 修正：捲動條沒出現時什麼都不畫（兩個擁有者都會先把整個 client 區塗成背景色）。修正後截圖確認「25」「3,264」「100.0%」都完整顯示。
+  - 我一開始以為是百分比的文字太寬，改成量測寬度。看到「檔案數」欄也被切之後，才發現猜錯了，已經改回原本的寫法。
+- **不顯示比例時面板變窄**（使用者要求）：
+  - 存檔的寬度（`PanelWidth`）一律是「有比例欄」的寬度。比例欄隱藏時，面板寬度扣掉比例欄（112 DIP）。在隱藏狀態下拖曳調整寬度，存檔時再加回去，所以開關切換來回，寬度都會一樣。
+  - 隱藏時的最小寬度是 160 DIP。直接扣掉會變成 128，放不下名稱、磁碟用量和捲動條。
+  - 計算放在 `list_model`（`PanelShownWidthDip`／`PanelSavedWidthDip`，欄寬 `ColumnWidthDip` 也從 `size_list.cpp` 搬到這裡），ui-tests 共 392 項，包含每 7 DIP 一個寬度的往返檢查。
+  - 本機實測（顯示縮放 175%）：面板寬度 583 → 387 → 583 px，差 196 px，就是 112 DIP。截圖確認比例欄消失，標題文字會加上省略號。
+  - 另外看到的既有問題（沒有修改）：英文介面下，面板的「Size on disk ▾」標題在 80 DIP 的窄欄裡左邊被切掉。現在可以用下面的欄界線拖曳把這一欄拉寬。
+
+### 2026-11-12　第 6 階段：名稱被截斷的三項改善
+
+- **起因**：使用者截圖。面板裡的名稱被截斷，而且不知道怎麼把欄位拉寬。使用者選了三項：拖曳邊緣更好找、欄界線可以拖曳、滑鼠停留時顯示全名。
+- **面板的拖曳帶**：
+  - 原本的情況：面板邊緣其實可以拖曳。清單會把 `WM_NCHITTEST` 轉給面板，回傳 `HTTRANSPARENT`。但可拖曳的範圍只有 6 DIP，而且看不見；面板在檔案總管右側時，這 6 DIP 還跟清單 12 DIP 寬的捲動條重疊。
+  - 現在：在可拉伸側和下緣各留一條 8 DIP 的拖曳帶，清單不再蓋住這兩條，也就不會跟捲動條重疊。每條拖曳帶中間畫一段 32 DIP 的短線，平時用框線色，滑鼠移上去時改用強調色（`WM_NCMOUSEMOVE`／`TrackMouseEvent(TME_NONCLIENT)`）。面板換到檔案總管的另一側時，拖曳帶也跟著換邊。
+- **欄界線拖曳**（`SizeList`）：
+  - 標題列的每條分隔線都畫出來，控制它右邊那一欄的寬度（名稱欄吃掉剩下的空間），寬度限制在 40～400 DIP。拖曳時游標是 `IDC_SIZEWE`。在分隔線上雙擊會恢復預設寬度。
+  - 欄寬存在 HKCU `PanelColumns`／`WindowColumns`，格式是 `Allocated=96;Share=150`。解析時會跳過名稱欄、不認得的欄名、不合法的數字和超出範圍的寬度，所以登錄值損壞時只會失去那幾項（`ParseColumnWidths`，ui-tests 有涵蓋）。
+  - 隱藏比例欄時，面板縮減的寬度改成「比例欄目前的寬度」，也就是使用者拉過的寬度，不再固定是 112。
+  - 本機實測：把訊息直接送給主視窗的清單，讓 Files 欄的分隔線往左拖 100 px（175%），存檔結果是 `Files=141`，跟計算的 84 + 100 × 96 / 168 一致。
+- **全名提示**（`tip_window.h/.cpp`，自己畫）：
+  - 系統內建的 tooltip 在深色模式下仍然是淺色，所以自己畫，用調色盤的顏色。提示框是 `WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOPMOST`，不會搶焦點，點擊會穿透，所以在面板上也能用。
+  - 名稱被截斷的那一列，滑鼠停留時間到了（`TME_HOVER`）就在那一列下方顯示完整名稱，文字跟名稱對齊。捲動、滾輪、點擊、換到別列、離開清單時都會收起來。主視窗和面板都有這個功能。
+  - 除錯過程：第一版提示框一出現就馬上消失。我暫時在程式裡加記錄檔，發現顯示提示框時 Windows 會補送一個 `WM_MOUSEMOVE`，而 `UpdateTip` 因為我在 `WM_MOUSEHOVER` 後把追蹤狀態清掉了，就把提示框隱藏，造成來回重複。改成「同一列不做任何事」後就正常了。另外把提示框改放在那一列的下方，不蓋住游標。除錯用的記錄已經移除。
+  - 本機實測（用 `SetCursorPos` 移動真正的游標，測完移回原位）：截斷的那一列會顯示完整名稱；沒截斷的那一列不顯示；游標離開後提示框收起。
+- ui-tests 418 項通過。
+- **欄寬調整改成檔案總管的方式**（使用者回饋：調整一欄時其他欄不應該跟著變，應該是面板寬度跟著變）：
+  - 分隔線改成「欄的右緣」，控制它左邊那一欄，往右拖就變寬。原本的設計是控制右邊那一欄、往右拖變窄，跟一般習慣相反，已經改掉。
+  - **面板**：被拖的那一欄變寬或變窄多少，面板就跟著變寬或變窄多少（`kListGrowParent`，用 SendMessage 讓版面立刻跟上），其他欄維持原寬度。名稱欄右緣也可以拖，拖了多少就是面板寬度改變多少。拖曳中面板可能往左長，所以拖曳距離用螢幕座標計算。存檔的面板寬度跟著更新。在分隔線上雙擊恢復預設寬度，面板也會跟著縮放。
+  - **主視窗**（使用者選「像檔案總管」）：還沒拖過任何欄時，名稱欄照舊填滿。第一次拖曳時，把名稱欄固定在當下的寬度，之後每一欄都有自己的寬度，由左往右排。總寬度小於清單時右邊留白；大於清單時出現水平捲動條。`ScrollStrip` 新增水平方向，水平捲動條用另一個計時器 ID，兩條捲動條才能各自連續捲動。水平捲動也可以用 Shift＋滾輪或 `WM_MOUSEHWHEEL`。在名稱欄的分隔線上雙擊，名稱欄會回到自動填滿。
+  - 欄寬設定改成也接受 `Name`（上限 1200 DIP）。只有主視窗用得到，面板的名稱欄永遠是填滿。
+  - 版面配置拆成純函式 `LayoutColumns`，ui-tests 共 441 項，其中一項是「只有被拖的那一欄改變」。
+  - 本機實測（用 SendMessage 送拖曳訊息，175%）：
+    - 拖「大小」欄的右緣 +35 px → 存成 `Name=149;Size=110`，名稱欄固定在原本的 149 DIP，其他欄往右移，出現水平捲動條。
+    - 再拖名稱欄 +400 px → `Name=378`。
+    - Shift＋滾輪可以往右捲。
+    - 以上都有截圖確認。面板的部分沒在本機實測。
+- **還沒驗證**：面板拖曳帶的實際畫面和懸停效果，以及面板跟著欄寬變寬變窄。
+- **面板右鍵選單時出現外框**（VM 截圖，Windows 10）：
+  - 現象：打開右鍵選單時，面板周圍多了一圈灰色的粗外框。
+  - 原因：為了讓選單在點擊外面時能關閉，選單出現前會把面板帶到前景。面板因此被啟用，`WM_NCACTIVATE` 交給 DefWindowProc 處理，它依 `WS_THICKFRAME` 畫出了外框。
+  - 修正：面板自己處理 `WM_NCACTIVATE`，不畫任何東西，直接回傳 TRUE。依文件，處理這個訊息時必須回傳 TRUE，啟用狀態的切換才會完成；面板不會被最小化，所以不需要依文件交給 DefWindowProc。
+  - 開發機是 Windows 11（圓角，由 DWM 畫邊框），看不到這個現象，要在 VM 上確認。
+
+### 2026-11-12　第 6 階段：安裝程式加入繁體中文
+
+- 使用者要求安裝程式要有繁中版，推翻同日稍早「只用英文」的決定。
+- **查證**（Inno Setup 翻譯頁和 issrc 原始碼庫）：
+  - 現在的翻譯頁把 Chinese (Traditional) 列在官方翻譯下，維護者是 GoneTone，適用 6.5.0 以上版本。
+  - 但 **6.7.3 發行標籤**（`is-6_7_3`）裡，這個檔放在 `Files/Languages/Unofficial/`，當時還是非官方翻譯。它是後來才在 `main` 分支移到官方位置，所以 6.7.3 的安裝包沒有附帶。這解釋了本機 `Languages\` 資料夾裡找不到它的原因。
+  - 我先前一度說它「其實是官方翻譯」，後來查證才知道：以 6.7.3 來說，它當時確實還是非官方的。
+- **兩個版本比較**（都用 6.7.3 編譯）：
+  - `main` 版（commit `6ef3219`，2026-08-04，沒有 BOM）：零警告。
+  - 6.7.3 時期的非官方版（有 BOM）：至少有 3 條訊息不被這個版本認得，另外有 3 條缺漏，會改用英文，而且這只是前幾條警告。
+  - 依 Inno 文件，6.3.0 起支援沒有 BOM 的 UTF-8 `.isl`；6.5.0 起，官方翻譯已經全部拿掉 BOM。
+  - 採用 `main` 版。
+- **授權**：
+  - `.isl` 檔本身沒有版權或授權文字，只列了譯者，並註明部分翻譯參考了網路資源。
+  - 它放在 issrc 原始碼庫裡，該庫採用 Inno Setup 授權：寬鬆授權，允許修改與再散布，條件是保留版權聲明、修改版要標明。這份授權跟 MIT 相容，因為這個檔是獨立的第三方檔案，不會併入 DirSize 的程式碼。
+  - 這份授權沒有特別提到翻譯檔。「翻譯檔受原始碼庫授權涵蓋」是推論，文件沒有明講。使用者看過這些事實後決定放進 repo。
+- **放法**：
+  - `installer/lang/ChineseTraditional.isl` 和 `INNO-SETUP-LICENSE.txt`（同一個 commit 的 `license.txt`）完全不改內容。
+  - `installer/lang/README.md` 記錄來源 commit、SHA-256 和授權說明。
+  - 新增 `.gitattributes`，讓這兩個檔不做換行轉換，SHA-256 才能保持一致（這台機器的 `core.autocrlf=true`）。
+- **`.iss` 的修改**：
+  - 加回 `zhtw` 語言，自訂訊息兩種語言都有。
+  - 加上 `ShowLanguageDialog=auto`：依 Windows 顯示語言自動選擇語言，兩種都不符合時才會詢問。
+  - 用 6.7.3 編譯零警告。
+- **還沒驗證**：繁中安裝精靈的實際畫面。安裝程式需要系統管理員權限，一啟動就會跳出 UAC，所以在開發機上沒有執行，要在中文和英文的 VM 上各看一次。
+- **VM 測試**：中文 Windows 上，安裝精靈卻全部顯示英文。
+  - 依文件，`UsePreviousLanguage` 預設是 yes，已經安裝過時會沿用上一次安裝的語言。VM 之前裝的是只有英文的版本，所以我推測是沿用了英文。
+  - 這個原因還沒有證實：已經請使用者查 `(Get-UICulture).Name` 和解除安裝登錄機碼裡的 `Inno Setup: Language`，結果還沒回來。
+  - 使用者同意後，加上 `UsePreviousLanguage=no`，讓安裝精靈一律跟著 Windows 介面語言，跟程式本身的行為一致。
+  - 重新編譯：零警告。檔案大小跟上一版一樣，所以改用 SHA-256 分辨兩版。
+  - 結果：使用者在中文 Windows 的 VM 上確認，安裝精靈已經是繁體中文。那兩項登錄值沒有查，所以「是沿用了上次的語言」這個原因還是推測，但加上 `UsePreviousLanguage=no` 之後問題就消失了。
+
+### 2026-11-12　第 6 階段：VM 驗證結果（使用者回報）
+
+- 面板右鍵選單：不再出現灰色外框（`WM_NCACTIVATE` 的修正有效）。
+- 面板拖曳帶：看得到提示線，拖得動。
+- 在面板標題列拖曳欄位分隔線：面板寬度跟著改變，其他欄維持原本的寬度。
+- 名稱被截斷時，在面板裡停留滑鼠會顯示完整名稱。
+- **沒有驗證**：
+  - 英文 Windows 上安裝精靈是不是英文：使用者目前沒有英文 Windows 的 VM。
+  - 右鍵選單點外面會不會關閉、關閉後焦點有沒有回到檔案總管：這兩項沒有另外回報。在這台開發機上，從背景開啟的檔案總管沒有讓面板出現（追蹤記錄是空的），原因沒有查明，留到 VM 上確認。標題列、工作列和高 DPI 下的顯示還沒有實際看過。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1481,6 +1634,49 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 第 6 階段 | [Using Registry String Redirection（MUIVerb）](https://learn.microsoft.com/en-us/windows/win32/intl/using-registry-string-redirection) |
 | 第 6 階段 | [SHLoadIndirectString](https://learn.microsoft.com/en-us/windows/win32/api/shlwapi/nf-shlwapi-shloadindirectstring) |
 | 第 6 階段設計 | [GetUserPreferredUILanguages](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getuserpreferreduilanguages) |
+| 安裝程式 | [Inno Setup：[Setup] AppId](https://jrsoftware.org/ishelp/topic_setup_appid.htm) |
+| 安裝程式 | [Inno Setup：[Setup] PrivilegesRequired](https://jrsoftware.org/ishelp/topic_setup_privilegesrequired.htm) |
+| 安裝程式 | [Inno Setup：[Setup] ArchitecturesAllowed](https://jrsoftware.org/ishelp/topic_setup_architecturesallowed.htm) |
+| 安裝程式 | [Inno Setup：[Setup] ArchitecturesInstallIn64BitMode](https://jrsoftware.org/ishelp/topic_setup_architecturesinstallin64bitmode.htm) |
+| 安裝程式 | [Inno Setup：[Setup] MinVersion](https://jrsoftware.org/ishelp/topic_setup_minversion.htm) |
+| 安裝程式 | [Inno Setup：[Setup] DisableDirPage](https://jrsoftware.org/ishelp/topic_setup_disabledirpage.htm) |
+| 安裝程式 | [Inno Setup：[Setup] CloseApplications（使用 Restart Manager）](https://jrsoftware.org/ishelp/topic_setup_closeapplications.htm) |
+| 安裝程式 | [Inno Setup：[Setup] AppMutex（沒有採用）](https://jrsoftware.org/ishelp/topic_setup_appmutex.htm) |
+| 安裝程式 | [Inno Setup：[Setup] OutputBaseFilename（不要取名 setup）](https://jrsoftware.org/ishelp/topic_setup_outputbasefilename.htm) |
+| 安裝程式 | [Inno Setup：[Setup] UninstallDisplayIcon](https://jrsoftware.org/ishelp/topic_setup_uninstalldisplayicon.htm) |
+| 安裝程式 | [Inno Setup：[Setup] WizardStyle](https://jrsoftware.org/ishelp/topic_setup_wizardstyle.htm) |
+| 安裝程式 | [Inno Setup：[Languages] section](https://jrsoftware.org/ishelp/topic_languagessection.htm) |
+| 安裝程式 | [Inno Setup：[Registry] section](https://jrsoftware.org/ishelp/topic_registrysection.htm) |
+| 安裝程式 | [Inno Setup：[Run] 與 [UninstallRun]（RunOnceId、postinstall）](https://jrsoftware.org/ishelp/topic_runsection.htm) |
+| 安裝程式 | [Inno Setup：[UninstallDelete] section](https://jrsoftware.org/ishelp/topic_uninstalldeletesection.htm) |
+| 安裝程式 | [Inno Setup：Pascal Scripting 事件函式（PrepareToInstall、CurStepChanged）](https://jrsoftware.org/ishelp/topic_scriptevents.htm) |
+| 安裝程式 | [Inno Setup：Pascal Scripting Exec](https://jrsoftware.org/ishelp/topic_isxfunc_exec.htm) |
+| 安裝程式 | [Inno Setup 翻譯清單（實測 6.7.3：繁體中文不在官方附帶的檔案裡，見 2026-11-12）](https://jrsoftware.org/files/istrans/) |
+| 安裝程式 | [Inno Setup：SetupIconFile](https://jrsoftware.org/ishelp/topic_setup_setupiconfile.htm) |
+| 安裝程式 | [Inno Setup 授權（license.txt）](https://jrsoftware.org/files/is/license.txt) |
+| 安裝程式 | [issrc：ChineseTraditional.isl（commit 6ef3219）](https://github.com/jrsoftware/issrc/blob/6ef32198ef1f7b7b375cd4b6b90896c2a58eb4c2/Files/Languages/ChineseTraditional.isl) |
+| 安裝程式 | [Inno Setup：Unicode（6.3 起 UTF-8 不需要 BOM）](https://jrsoftware.org/ishelp/topic_unicode.htm) |
+| 安裝程式 | [Inno Setup：UsePreviousLanguage](https://jrsoftware.org/ishelp/topic_setup_usepreviouslanguage.htm) |
+| 安裝程式 | [Inno Setup：LanguageDetectionMethod](https://jrsoftware.org/ishelp/topic_setup_languagedetectionmethod.htm) |
+| 安裝程式 | [Inno Setup：ShowLanguageDialog](https://jrsoftware.org/ishelp/topic_setup_showlanguagedialog.htm) |
+| 安裝程式 | [Inno Setup：命令列參數（/LANG）](https://jrsoftware.org/ishelp/topic_setupcmdline.htm) |
+| 安裝程式 | [Inno Setup：[LangOptions]（LanguageCodePage）](https://jrsoftware.org/ishelp/topic_langoptionssection.htm) |
+| 安裝程式 | [Inno Setup 6 更新紀錄（6.3.0 UTF-8、6.5.0 移除 BOM）](https://jrsoftware.org/files/is6-whatsnew.htm) |
+| 安裝程式 | [Inno Setup：[Run] 與 [UninstallRun]（runasoriginaluser、unchecked）](https://jrsoftware.org/ishelp/topic_runsection.htm) |
+| 安裝程式 | [Inno Setup：[Tasks]](https://jrsoftware.org/ishelp/topic_taskssection.htm) |
+| 安裝程式 | [Inno Setup：UsePreviousTasks](https://jrsoftware.org/ishelp/topic_setup_useprevioustasks.htm) |
+| 前端 | [CommandLineToArgvW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw) |
+| 前端 | [RegisterWindowMessageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerwindowmessagew) |
+| 前端 | [PostMessageW（HWND_BROADCAST）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postmessagew) |
+| 前端 | [TrackPopupMenu（擁有者要在前景）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-trackpopupmenu) |
+| 前端 | [WM_NCACTIVATE（自行處理時回傳 TRUE）](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-ncactivate) |
+| 圖示 | [App icon construction（Win32 至少 16、24、32、48、256）](https://learn.microsoft.com/en-us/windows/apps/design/style/iconography/app-icon-construction) |
+| 圖示 | [ICON resource](https://learn.microsoft.com/en-us/windows/win32/menurc/icon-resource) |
+| 圖示 | [LoadIconMetric（試過後不用，見 2026-11-12）](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-loadiconmetric) |
+| 圖示 | [LoadImageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-loadimagew) |
+| 圖示 | [GetSystemMetrics（SM_CXICON、SM_CXSMICON）](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getsystemmetrics) |
+| 安裝程式 | [taskkill（/im、/f）](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/taskkill) |
+| 安裝程式 | [Controlling a Service Using SC（sc start）](https://learn.microsoft.com/en-us/windows/win32/services/controlling-a-service-using-sc) |
 | 測試 | [/fsanitize](https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize) |
 | 測試 | [AddressSanitizer 建置參考](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-building) |
 | 建置 | [CMAKE_MSVC_RUNTIME_LIBRARY](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_RUNTIME_LIBRARY.html) |

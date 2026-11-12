@@ -17,6 +17,9 @@ const wchar_t* const kVerbKeys[] = {
     L"Software\\Classes\\Drive\\shell\\DirSize",
 };
 
+const wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const wchar_t kRunValue[] = L"DirSizePanel";
+
 DWORD SetDefault(const std::wstring& key, const std::wstring& value) {
     return RegSetKeyValueW(HKEY_CURRENT_USER, key.c_str(), nullptr, REG_SZ, value.c_str(),
                            static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
@@ -67,6 +70,33 @@ DWORD RemoveShellVerb() {
     }
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return result;
+}
+
+bool IsShellVerbSetByInstaller() {
+    HKEY h = nullptr;
+    std::wstring key = std::wstring(kVerbKeys[0]) + L"\\command";
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0, KEY_QUERY_VALUE, &h) != ERROR_SUCCESS) return false;
+    RegCloseKey(h);
+    return true;
+}
+
+bool IsPanelAutostart() {
+    return RegGetValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, RRF_RT_REG_SZ, nullptr, nullptr, nullptr) ==
+           ERROR_SUCCESS;
+}
+
+DWORD SetPanelAutostart(bool on) {
+    if (!on) {
+        LSTATUS s = RegDeleteKeyValueW(HKEY_CURRENT_USER, kRunKey, kRunValue);
+        return s == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : static_cast<DWORD>(s);
+    }
+    const std::wstring exe = ExePath();
+    if (exe.empty()) return GetLastError();
+    const std::wstring command = PanelCommandLine(exe);
+    // The documentation limits a Run command line to 260 characters.
+    if (command.size() > 260) return ERROR_FILENAME_EXCED_RANGE;
+    return static_cast<DWORD>(RegSetKeyValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, REG_SZ, command.c_str(),
+                                              static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t))));
 }
 
 }  // namespace dirsize::ui

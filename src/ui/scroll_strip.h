@@ -1,5 +1,6 @@
 #pragma once
-// Self-drawn vertical scroll bar for SizeList and FolderTree. The system
+// Self-drawn scroll bar for SizeList and FolderTree, vertical (rows) or
+// horizontal (pixels, the list's columns). The system
 // scroll bar (WS_VSCROLL) stays light in dark mode; the only way to change
 // that is an undocumented theme name, so, as for the list and the tree
 // themselves (design section 5), the bar is drawn with the palette.
@@ -19,7 +20,10 @@ public:
     static constexpr UINT_PTR kRepeatTimer = 0x5C01;  // owner forwards WM_TIMER with this ID
 
     void SetDpi(UINT dpi) { dpi_ = dpi ? dpi : 96; }
-    int Width() const { return Scale(12); }
+    // A horizontal bar; with its own timer ID (kRepeatTimer + 1), so both
+    // bars of one owner can repeat independently.
+    void SetHorizontal(bool horizontal) { horizontal_ = horizontal; }
+    int Width() const { return Scale(12); }  // the thickness
     // The strip, in the owner's client coordinates.
     void SetRect(const RECT& r) { rect_ = r; }
     const RECT& Rect() const { return rect_; }
@@ -42,7 +46,13 @@ private:
     int MinThumb() const { return Scale(24); }
     int PageStep(POINT pt) const;  // -page, +page, or 0 when the thumb reached the cursor
     void SetHover(HWND owner, bool hover);
+    // The track along the bar and a point's coordinate along it.
+    int TrackStart() const { return horizontal_ ? rect_.left : rect_.top; }
+    int TrackLength() const { return horizontal_ ? rect_.right - rect_.left : rect_.bottom - rect_.top; }
+    int Along(POINT pt) const { return horizontal_ ? pt.x : pt.y; }
+    UINT_PTR TimerId() const { return horizontal_ ? kRepeatTimer + 1 : kRepeatTimer; }
 
+    bool horizontal_ = false;
     UINT dpi_ = 96;
     RECT rect_{};
     int count_ = 0;
@@ -50,7 +60,7 @@ private:
     int pos_ = 0;
     bool hover_ = false;
     bool dragging_ = false;
-    int grabOffset_ = 0;  // cursor y minus thumb top when the drag started
+    int grabOffset_ = 0;  // cursor minus thumb start (along the bar) when the drag started
     bool repeating_ = false;
     int repeatDirection_ = 0;
 };

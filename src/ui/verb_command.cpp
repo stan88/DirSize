@@ -4,6 +4,8 @@ namespace dirsize::ui {
 
 std::wstring VerbCommandLine(const std::wstring& exe) { return L"\"" + exe + L"\" \"%1\""; }
 
+std::wstring PanelCommandLine(const std::wstring& exe) { return L"\"" + exe + L"\" --panel"; }
+
 std::wstring PathFromArgument(const std::wstring& arg) {
     // A path cannot contain a quotation mark, so a trailing one can only be
     // the escaped closing quote after a trailing backslash.

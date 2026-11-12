@@ -43,3 +43,6 @@
 #define IDS_MENU_LANGUAGE       197
 #define IDS_MENU_LANG_AUTO      198
 #define IDS_ERR_SETTING         200
+#define IDS_MENU_VERB_INSTALLER 201
+#define IDS_MENU_AUTOSTART      202
+#define IDS_MENU_SHOW_SHARE     203

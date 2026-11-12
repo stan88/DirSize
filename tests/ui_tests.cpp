@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <shellapi.h>  // CommandLineToArgvW
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -102,6 +103,129 @@ void TestSort() {
     CHECK(Names(v) == L"A file2 file10 b ");
     CHECK(!DefaultDescending(Column::Name));
     CHECK(DefaultDescending(Column::Allocated));
+}
+
+bool Has(const std::vector<Column>& v, Column c) { return std::find(v.begin(), v.end(), c) != v.end(); }
+
+// The "show the Share column" setting (user request 2026-11-12).
+void TestColumns() {
+    const auto win = WindowColumns(true), winNo = WindowColumns(false);
+    const auto pan = PanelColumns(true), panNo = PanelColumns(false);
+    CHECK(win.size() == 5 && Has(win, Column::Share));
+    CHECK(winNo.size() == 4 && !Has(winNo, Column::Share));
+    CHECK(Has(winNo, Column::Size) && Has(winNo, Column::Allocated) && Has(winNo, Column::Files));
+    CHECK(pan.size() == 3 && pan[0] == Column::Name && pan[1] == Column::Allocated && pan[2] == Column::Share);
+    CHECK(panNo.size() == 2 && panNo[0] == Column::Name && panNo[1] == Column::Allocated);
+    for (const auto* v : {&win, &winNo, &pan, &panNo}) CHECK(!v->empty() && v->front() == Column::Name);
+
+    // Sorting by Share and hiding it: Allocated (same key), not Size.
+    CHECK(FallbackSortColumn(Column::Share, winNo) == Column::Allocated);
+    CHECK(FallbackSortColumn(Column::Share, panNo) == Column::Allocated);
+    CHECK(FallbackSortColumn(Column::Share, win) == Column::Share);  // still shown
+    CHECK(FallbackSortColumn(Column::Files, panNo) == Column::Allocated);  // second column
+    CHECK(FallbackSortColumn(Column::Size, pan) == Column::Allocated);
+    CHECK(FallbackSortColumn(Column::Name, panNo) == Column::Name);
+    CHECK(FallbackSortColumn(Column::Share, {Column::Name}) == Column::Name);
+
+    // Panel width: narrower by the share column when it is hidden, and the
+    // saved width (with the column) survives turning it off and on.
+    const int share = ColumnWidthDip(Column::Share, true);
+    CHECK(share == 112);
+    CHECK(PanelShownWidthDip(340, true, share) == 340);
+    CHECK(PanelShownWidthDip(340, false, share) == 340 - share);
+    CHECK(PanelSavedWidthDip(PanelShownWidthDip(340, false, share), false, share) == 340);
+    CHECK(PanelShownWidthDip(240, false, share) == kPanelMinWidthNoShareDip);  // 128 would be too narrow
+    CHECK(PanelShownWidthDip(900, false, share) == 900 - share);
+    CHECK(PanelShownWidthDip(5000, true, share) == kPanelMaxWidthDip);
+    CHECK(PanelShownWidthDip(10, true, share) == kPanelMinWidthDip);
+    // Resized while hidden: saved with the column added back, within limits.
+    CHECK(PanelSavedWidthDip(200, false, share) == 200 + share);
+    CHECK(PanelSavedWidthDip(kPanelMinWidthNoShareDip, false, share) == kPanelMinWidthDip + 32);
+    CHECK(PanelShownWidthDip(PanelSavedWidthDip(kPanelMinWidthNoShareDip, false, share), false, share) ==
+          kPanelMinWidthNoShareDip);
+    CHECK(PanelSavedWidthDip(PanelMaxWidthDip(false, share), false, share) == kPanelMaxWidthDip);
+    CHECK(PanelSavedWidthDip(300, true, share) == 300);
+    for (int w = kPanelMinWidthNoShareDip; w <= PanelMaxWidthDip(false, share); w += 7) {
+        CHECK(PanelShownWidthDip(PanelSavedWidthDip(w, false, share), false, share) == w);
+    }
+    CHECK(PanelMinWidthDip(true) == kPanelMinWidthDip && PanelMinWidthDip(false) == kPanelMinWidthNoShareDip);
+    // A share column the user widened: the panel narrows by that width.
+    CHECK(PanelShownWidthDip(500, false, 200) == 300);
+    CHECK(PanelSavedWidthDip(300, false, 200) == 500);
+    CHECK(PanelShownWidthDip(500, true, 200) == 500);  // shown: the user's width is inside
+    CHECK(PanelShownWidthDip(900, false, 9999) == 900 - kColumnMaxDip);  // a bad width is clamped
+    CHECK(PanelShownWidthDip(500, false, 9999) == kPanelMinWidthNoShareDip);
+}
+
+// Column widths the user dragged, saved as text (settings "PanelColumns").
+void TestColumnWidths() {
+    auto w = ParseColumnWidths(L"Allocated=96;Share=150");
+    CHECK(w.size() == 2 && w[0].column == Column::Allocated && w[0].dip == 96 && w[1].column == Column::Share &&
+          w[1].dip == 150);
+    CHECK(FormatColumnWidths(w) == L"Allocated=96;Share=150");
+    CHECK(ParseColumnWidths(L"").empty());
+    CHECK(ParseColumnWidths(L";;;").empty());
+    // Name: the window's name column, with a larger limit.
+    auto name = ParseColumnWidths(L"Name=600");
+    CHECK(name.size() == 1 && name[0].column == Column::Name && name[0].dip == 600);
+    CHECK(ParseColumnWidths(L"Name=1200").size() == 1);
+    CHECK(ParseColumnWidths(L"Name=1201").empty());
+    CHECK(ParseColumnWidths(L"Name=39").empty());
+    CHECK(FormatColumnWidths({{Column::Name, 5000}}) == L"Name=1200");
+    CHECK(ColumnMaxDip(Column::Name) == kNameColumnMaxDip && ColumnMaxDip(Column::Size) == kColumnMaxDip);
+    // Skipped: unknown names, bad numbers, limits.
+    CHECK(ParseColumnWidths(L"Bogus=100").empty());
+    CHECK(ParseColumnWidths(L"Size=abc;Files=-5;Share=").empty());
+    CHECK(ParseColumnWidths(L"Size=39").empty());
+    CHECK(ParseColumnWidths(L"Size=401").empty());
+    CHECK(ParseColumnWidths(L"Size=99999999999999999999").empty());
+    CHECK(ParseColumnWidths(L"size=100").empty());  // names are exact
+    auto edge = ParseColumnWidths(L"Size=40;Files=400");
+    CHECK(edge.size() == 2 && edge[0].dip == kColumnMinDip && edge[1].dip == kColumnMaxDip);
+    // A damaged entry loses only itself; a repeated column keeps the last.
+    auto mixed = ParseColumnWidths(L"Size=80;garbage;Files=x;Size=90;Share=120");
+    CHECK(mixed.size() == 2 && mixed[0].column == Column::Size && mixed[0].dip == 90 &&
+          mixed[1].column == Column::Share && mixed[1].dip == 120);
+    // Dragging a separator (right edge of the column): right = wider.
+    CHECK(DraggedWidthDip(80, 0, 96, true) == 80);
+    CHECK(DraggedWidthDip(80, 20, 96, true) == 100);
+    CHECK(DraggedWidthDip(80, -20, 96, true) == 60);
+    CHECK(DraggedWidthDip(80, 35, 168, true) == 100);  // 35 px at 175% = 20 DIPs
+    CHECK(DraggedWidthDip(80, -35, 168, true) == 60);
+    CHECK(DraggedWidthDip(80, -1000, 96, true) == kColumnMinDip);
+    CHECK(DraggedWidthDip(80, 1000, 96, true) == kColumnMaxDip);
+    CHECK(DraggedWidthDip(0, -50, 96, false) == -50);  // the name column: a change, not clamped
+    CHECK(DraggedWidthDip(0, 175, 168, false) == 100);
+    CHECK(DraggedWidthDip(80, 20, 0, true) == 100);    // dpi 0 taken as 96
+    CHECK(DraggedWidthDip(300, 192, 96, true, kNameColumnMaxDip) == 492);  // name in the window
+    CHECK(DraggedWidthDip(1100, 500, 96, true, kNameColumnMaxDip) == kNameColumnMaxDip);
+    CHECK(FormatColumnWidths({}) == L"");
+    CHECK(FormatColumnWidths({{Column::Files, 5}}) == L"Files=40");  // clamped on writing too
+    const std::vector<ColumnWidth> all = {
+        {Column::Size, 41}, {Column::Allocated, 222}, {Column::Share, 333}, {Column::Files, 400}};
+    auto back = ParseColumnWidths(FormatColumnWidths(all));
+    CHECK(back.size() == all.size());
+    for (size_t i = 0; i < all.size() && i < back.size(); ++i) {
+        CHECK(back[i].column == all[i].column && back[i].dip == all[i].dip);
+    }
+
+    // Layout: a fill column takes the rest; fixed ones keep their widths
+    // and may add up to more than the list (it then scrolls sideways).
+    auto sum = [](const std::vector<int>& v) { int s = 0; for (int x : v) s += x; return s; };
+    auto fill = LayoutColumns({-1, 90, 96}, 96, 500, 8, 120);
+    CHECK(fill.size() == 3 && fill[0] == 500 - 8 - 90 - 96 && fill[1] == 90 && fill[2] == 96);
+    CHECK(sum(fill) + 8 == 500);  // fills exactly
+    auto narrow = LayoutColumns({-1, 90, 96}, 96, 200, 8, 120);
+    CHECK(narrow[0] == 120 && sum(narrow) + 8 > 200);  // the minimum wins: wider than the list
+    auto fixed = LayoutColumns({300, 90, 96}, 96, 1000, 8, 120);
+    CHECK(fixed[0] == 300 && sum(fixed) + 8 == 494);  // blank space at the right
+    auto scaled = LayoutColumns({300, 90}, 168, 2000, 14, 210);
+    CHECK(scaled[0] == 525 && scaled[1] == 158);  // 175%: 300 -> 525, 90 -> 157.5 -> 158
+    // One column wider: only it changes, the others keep their widths.
+    auto before = LayoutColumns({300, 90, 96, 150}, 96, 900, 8, 120);
+    auto after = LayoutColumns({300, 120, 96, 150}, 96, 900, 8, 120);
+    CHECK(after[0] == before[0] && after[2] == before[2] && after[3] == before[3] && after[1] == before[1] + 30);
+    CHECK(LayoutColumns({}, 96, 500, 8, 120).empty());
 }
 
 void TestPalette() {
@@ -354,6 +478,7 @@ void TestVerbCommand() {
     const std::wstring exe = L"C:\\Program Files\\DirSize\\dirsize.exe";
     const std::wstring command = VerbCommandLine(exe);
     CHECK(command == L"\"C:\\Program Files\\DirSize\\dirsize.exe\" \"%1\"");
+    CHECK(PanelCommandLine(exe) == L"\"C:\\Program Files\\DirSize\\dirsize.exe\" --panel");
 
     // Through the documented parsing rules (CommandLineToArgvW) and back.
     auto roundTrip = [&](const std::wstring& path) {
@@ -681,6 +806,8 @@ void TestStringTables() {
 int main() {
     TestFormat();
     TestSort();
+    TestColumns();
+    TestColumnWidths();
     TestPalette();
     TestPlacement();
     TestPanelRules();

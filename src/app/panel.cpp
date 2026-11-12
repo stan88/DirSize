@@ -11,6 +11,7 @@
 #include "ui/folder_source.h"
 #include "ui/format.h"
 #include "ui/placement.h"
+#include "ui/settings.h"
 #include "ui/size_list.h"
 #include "ui/strings.h"
 #include "ui/theme.h"
@@ -24,11 +25,13 @@ constexpr UINT kThemeChanged = WM_APP + 1;
 constexpr UINT kFolderLoaded = WM_APP + 2;
 constexpr UINT kExplorerChanged = WM_APP + 3;
 constexpr UINT_PTR kZOrderTimer = 1;
-constexpr int kDefaultWidthDip = 340;
-constexpr int kMinWidthDip = 240;
-constexpr int kMaxWidthDip = 900;
+constexpr int kDefaultWidthDip = 340;  // with the share column (list_model.h)
 constexpr int kMinHeightDip = 160;
-constexpr int kGripDip = 6;  // drag area at the resizable edges
+// Drag strips at the resizable edges (the side away from Explorer, and the
+// bottom). The list stays out of them, so they do not overlap its scroll
+// bar, and a small handle in each shows where to drag (user request).
+constexpr int kGripDip = 8;
+constexpr int kHandleDip = 32;  // length of the handle drawn in a strip
 constexpr int kHeaderDip = 54;
 constexpr wchar_t kSettingsKey[] = L"Software\\DirSize";
 
@@ -38,7 +41,7 @@ void LoadPanelSize(int& widthDip, int& heightDip) {
     DWORD value = 0, size = sizeof(value);
     if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, L"PanelWidth", RRF_RT_REG_DWORD, nullptr, &value, &size) ==
         ERROR_SUCCESS) {
-        widthDip = std::clamp(static_cast<int>(value), kMinWidthDip, kMaxWidthDip);
+        widthDip = std::clamp(static_cast<int>(value), kPanelMinWidthDip, kPanelMaxWidthDip);
     }
     size = sizeof(value);
     if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, L"PanelHeight", RRF_RT_REG_DWORD, nullptr, &value, &size) ==
@@ -105,6 +108,12 @@ private:
     RECT CloseBox(const RECT& client) const;
     LRESULT HitTest(LPARAM lp) const;
     void OnSizeEnd();
+    void ShowMenu(POINT screen);
+    int ShareDip() const;  // width of the share column (the user's or the default)
+    RECT WidthStrip(const RECT& client) const;
+    RECT BottomStrip(const RECT& client) const;
+    void PaintStrips(HDC dc, const RECT& client);
+    void SetEdgeHover(bool hover);
     int Border() const { return rounded_ ? 0 : std::max(1, Scale(1)); }
     int Scale(int dip) const { return MulDiv(dip, static_cast<int>(dpi_), 96); }
 
@@ -126,8 +135,10 @@ private:
     UINT dpi_ = 96;
     HFONT font_ = nullptr;
     HFONT titleFont_ = nullptr;
-    int widthDip_ = kDefaultWidthDip;
+    int widthDip_ = kDefaultWidthDip;  // saved width: with the share column
     int heightDip_ = 0;     // 0 = as tall as Explorer
+    bool showShare_ = true; // settings.h; without it the panel is narrower
+    bool edgeHover_ = false;  // the mouse is over a drag strip
     bool sizing_ = false;   // the user is dragging an edge
     bool rounded_ = false;  // Windows 11 draws rounded corners and the border
 };
@@ -186,10 +197,13 @@ void Panel::OnCreate() {
     DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
     rounded_ = SUCCEEDED(DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner)));
     UpdateFonts();
+    showShare_ = ShowShareColumn();
     list_ = SizeList::Create(hwnd_, instance_);
     if (list_) {
-        list_->SetColumns({Column::Name, Column::Allocated, Column::Share});
+        list_->SetColumns(PanelColumns(showShare_));
         list_->SetCompact(true);
+        list_->SetColumnWidths(ParseColumnWidths(ColumnWidthsSetting(true)));
+        list_->SetGrowParent(true);  // a resized column changes the panel width
         list_->SetDpi(dpi_);
     }
     theme_.Watch(hwnd_, kThemeChanged);
@@ -300,10 +314,15 @@ void Panel::Place(bool raise) {
     MONITORINFO mi{sizeof(mi)};
     GetMonitorInfoW(MonitorFromWindow(target_, MONITOR_DEFAULTTONEAREST), &mi);
     const int targetDpi = static_cast<int>(GetDpiForWindow(target_));
-    const int width = MulDiv(widthDip_, targetDpi, 96);
+    const int width = MulDiv(PanelShownWidthDip(widthDip_, showShare_, ShareDip()), targetDpi, 96);
     const int height = heightDip_ > 0 ? MulDiv(heightDip_, targetDpi, 96) : 0;
     PanelPlacement p = PlacePanel(frame, mi.rcWork, width, height);
+    const bool sideChanged = WidthEdgeIsRight(p.side) != WidthEdgeIsRight(side_);
     side_ = p.side;
+    if (sideChanged) {  // the drag strip moves to the other side
+        Layout();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
     // Inside, the panel overlaps Explorer, so it must stay above it.
     if (side_ == PanelSide::InsideRight) raise = true;
     HWND after = nullptr;
@@ -340,14 +359,68 @@ void Panel::UpdateFonts() {
     titleFont_ = CreateFontIndirectW(&title);
 }
 
+int Panel::ShareDip() const {
+    return list_ ? list_->ColumnDip(Column::Share) : ColumnWidthDip(Column::Share, true);
+}
+
+RECT Panel::WidthStrip(const RECT& client) const {
+    const int border = Border(), grip = Scale(kGripDip);
+    const int left = WidthEdgeIsRight(side_) ? client.right - border - grip : client.left + border;
+    return RECT{left, Scale(kHeaderDip), left + grip, client.bottom - border - grip};
+}
+
+RECT Panel::BottomStrip(const RECT& client) const {
+    const int border = Border(), grip = Scale(kGripDip);
+    return RECT{client.left + border, client.bottom - border - grip, client.right - border, client.bottom - border};
+}
+
 void Panel::Layout() {
     RECT rc;
     GetClientRect(hwnd_, &rc);
-    const int border = Border();
     if (list_) {
-        MoveWindow(list_->Window(), border, Scale(kHeaderDip), std::max(0L, rc.right - 2 * border),
-                   std::max(0L, rc.bottom - Scale(kHeaderDip) - border), TRUE);
+        // Between the header, the drag strips and the border.
+        const RECT strip = WidthStrip(rc);
+        const int border = Border(), grip = Scale(kGripDip);
+        const int left = WidthEdgeIsRight(side_) ? border : strip.right;
+        const int right = WidthEdgeIsRight(side_) ? strip.left : rc.right - border;
+        MoveWindow(list_->Window(), left, Scale(kHeaderDip), std::max(0, right - left),
+                   std::max(0, static_cast<int>(rc.bottom) - Scale(kHeaderDip) - border - grip), TRUE);
     }
+}
+
+// The strips with a short handle in the middle of each: the line color
+// normally, the accent color while the mouse is over a strip.
+void Panel::PaintStrips(HDC dc, const RECT& client) {
+    const RECT side = WidthStrip(client), bottom = BottomStrip(client);
+    SetDCBrushColor(dc, palette_.background);
+    FillRect(dc, &side, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    FillRect(dc, &bottom, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    const int thick = std::max(2, Scale(2)), length = Scale(kHandleDip);
+    SetDCBrushColor(dc, edgeHover_ ? palette_.bar : palette_.line);
+    const int cx = (side.left + side.right) / 2, cy = (side.top + side.bottom) / 2;
+    RECT v{cx - thick / 2, cy - length / 2, cx - thick / 2 + thick, cy + length / 2};
+    FillRect(dc, &v, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    const int bx = (bottom.left + bottom.right) / 2, by = (bottom.top + bottom.bottom) / 2;
+    RECT h{bx - length / 2, by - thick / 2, bx + length / 2, by - thick / 2 + thick};
+    FillRect(dc, &h, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+}
+
+void Panel::SetEdgeHover(bool hover) {
+    if (hover == edgeHover_) return;
+    edgeHover_ = hover;
+    if (hover) {
+        // WM_NCMOUSELEAVE when the mouse leaves the strips (they are
+        // "non-client": WM_NCHITTEST returns the sizing codes there).
+        TRACKMOUSEEVENT tme{sizeof(tme)};
+        tme.dwFlags = TME_LEAVE | TME_NONCLIENT;
+        tme.hwndTrack = hwnd_;
+        TrackMouseEvent(&tme);
+    }
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    RECT side = WidthStrip(rc), bottom = BottomStrip(rc);
+    InvalidateRect(hwnd_, &side, FALSE);
+    InvalidateRect(hwnd_, &bottom, FALSE);
 }
 
 RECT Panel::CloseBox(const RECT& client) const {
@@ -400,7 +473,7 @@ void Panel::OnSizeEnd() {
     RECT wr;
     GetWindowRect(hwnd_, &wr);
     const int targetDpi = target_ ? static_cast<int>(GetDpiForWindow(target_)) : static_cast<int>(dpi_);
-    widthDip_ = std::clamp(MulDiv(wr.right - wr.left, 96, targetDpi), kMinWidthDip, kMaxWidthDip);
+    widthDip_ = PanelSavedWidthDip(MulDiv(wr.right - wr.left, 96, targetDpi), showShare_, ShareDip());
     // As tall as Explorer (or taller): follow Explorer's height again.
     RECT frame{};
     int full = 0;
@@ -415,14 +488,79 @@ void Panel::OnSizeEnd() {
     Place(true);
 }
 
+// Right-click on the panel: its settings (only the share column so far).
+// The panel never takes the focus (WS_EX_NOACTIVATE), but a popup menu
+// needs its owner in the foreground to close when the user clicks
+// elsewhere (TrackPopupMenu remarks), so the panel is brought forward for
+// the menu and Explorer afterwards.
+void Panel::ShowMenu(POINT screen) {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    const bool showShare = ShowShareColumn();
+    AppendMenuW(menu, MF_STRING | (showShare ? MF_CHECKED : MF_UNCHECKED), 1, Text(IDS_MENU_SHOW_SHARE).c_str());
+    SetForegroundWindow(hwnd_);
+    UINT cmd = static_cast<UINT>(
+        TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y, 0, hwnd_, nullptr));
+    DestroyMenu(menu);
+    if (target_ && IsWindow(target_)) SetForegroundWindow(target_);
+    if (cmd == 1 && SetShowShareColumn(!showShare) == ERROR_SUCCESS) NotifySettingsChanged();
+}
+
 LRESULT Panel::Handle(UINT msg, WPARAM wp, LPARAM lp) {
+    // A registered message: not a constant, so not a case label.
+    if (msg == SettingsChangedMessage() && msg != 0) {
+        const bool show = ShowShareColumn();
+        if (show != showShare_) {
+            showShare_ = show;
+            if (list_) list_->SetColumns(PanelColumns(showShare_));
+            Place(false);  // narrower or wider by the share column
+        }
+        return 0;
+    }
     switch (msg) {
+        case WM_NCMOUSEMOVE:
+            SetEdgeHover(wp == HTLEFT || wp == HTRIGHT || wp == HTBOTTOM || wp == HTBOTTOMLEFT ||
+                         wp == HTBOTTOMRIGHT);
+            break;
+        case WM_NCMOUSELEAVE:
+            SetEdgeHover(false);
+            return 0;
+        case WM_MOUSEMOVE:
+            SetEdgeHover(false);
+            return 0;
+        case kListGrowParent:
+            // A column got wider or narrower by wParam DIPs: so does the
+            // panel, and the other columns keep their widths. At the panel's
+            // limits the name column takes the rest.
+            widthDip_ = std::clamp(widthDip_ + static_cast<int>(wp), kPanelMinWidthDip, kPanelMaxWidthDip);
+            Place(false);
+            return 0;
+        case kListColumnsResized:  // the drag ended: keep the widths
+            if (list_) SetColumnWidthsSetting(true, FormatColumnWidths(list_->ColumnWidths()));
+            SavePanelSize(widthDip_, heightDip_);
+            return 0;
+        case kListContextMenu:  // right-click or the menu key on the list
+            ShowMenu(POINT{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
+            return 0;
+        case WM_CONTEXTMENU: {  // right-click on the panel's own header
+            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (pt.x == -1 && pt.y == -1) GetCursorPos(&pt);  // keyboard
+            ShowMenu(pt);
+            return 0;
+        }
         case WM_CREATE:
             OnCreate();
             return 0;
         case WM_NCCALCSIZE:
             if (wp) return 0;  // no visible frame: the client area is the whole window
             break;
+        case WM_NCACTIVATE:
+            // The panel becomes active only for its right-click menu. Left to
+            // DefWindowProc, the change drew the thick sizing frame over the
+            // panel on Windows 10 (VM screenshot). The panel draws everything
+            // itself, so nothing is drawn here; TRUE completes the change of
+            // active window, as the WM_NCACTIVATE documentation requires.
+            return TRUE;
         case WM_NCHITTEST:
             return HitTest(lp);
         case WM_ENTERSIZEMOVE:
@@ -433,9 +571,9 @@ LRESULT Panel::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_GETMINMAXINFO: {
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-            mmi->ptMinTrackSize.x = Scale(kMinWidthDip);
+            mmi->ptMinTrackSize.x = Scale(PanelMinWidthDip(showShare_));
             mmi->ptMinTrackSize.y = Scale(kMinHeightDip);
-            mmi->ptMaxTrackSize.x = Scale(kMaxWidthDip);
+            mmi->ptMaxTrackSize.x = Scale(PanelMaxWidthDip(showShare_, ShareDip()));
             return 0;
         }
         case kListOpenItem: {
@@ -461,6 +599,7 @@ LRESULT Panel::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             RECT rc;
             GetClientRect(hwnd_, &rc);
             PaintHeader(dc, rc);
+            PaintStrips(dc, rc);
             EndPaint(hwnd_, &ps);
             return 0;
         }

@@ -6,6 +6,7 @@
 //   dirsize.exe [folder]
 //   dirsize.exe --panel [--trace]
 //   dirsize.exe --check <folder> <output file>   (verification scripts)
+//   dirsize.exe --setting <autostart|share> <on|off>   (installer, per user)
 
 #include <windows.h>
 #include <unknwn.h>
@@ -27,6 +28,7 @@
 #include "ui/folder_tree.h"
 #include "ui/format.h"
 #include "ui/language.h"
+#include "ui/settings.h"
 #include "ui/shell_verb.h"
 #include "ui/size_list.h"
 #include "ui/strings.h"
@@ -39,6 +41,7 @@ using namespace dirsize::ui;
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"DirSizeMainWindow";
+constexpr WORD kAppIcon = 1;  // the ICON resource in dirsize.rc
 constexpr UINT kThemeChanged = WM_APP + 1;
 constexpr UINT kFolderLoaded = WM_APP + 2;
 constexpr WORD kCmdRefresh = 1;
@@ -51,6 +54,8 @@ constexpr UINT kMenuPick = 101;
 constexpr UINT kMenuOpen = 102;
 constexpr UINT kMenuExplore = 103;
 constexpr UINT kMenuRefresh = 104;
+constexpr UINT kMenuAutostart = 105;
+constexpr UINT kMenuShowShare = 106;
 constexpr UINT kMenuLangAuto = 199;  // then kMenuLangFirst + index into Languages()
 constexpr UINT kMenuLangFirst = 200;
 constexpr int kTreeWidthDip = 260;
@@ -143,6 +148,16 @@ bool MainWindow::Register(HINSTANCE instance) {
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = kWindowClass;
+    // The icon from dirsize.rc at the system's large and small sizes. The
+    // class lives as long as the process, so the icons are not destroyed.
+    // On failure the handles stay null and Windows uses its default icon.
+    // Not LoadIconMetric: it is imported from comctl32 by ordinal 380, which
+    // only version 6 has, and this program does not ask for version 6 in its
+    // manifest; the program then failed to start (DEVLOG 2026-11-12).
+    wc.hIcon = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(kAppIcon), IMAGE_ICON,
+                                             GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(kAppIcon), IMAGE_ICON,
+                                               GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
     return RegisterClassExW(&wc) != 0;
 }
 
@@ -184,7 +199,11 @@ void MainWindow::OnCreate() {
     tree_ = FolderTree::Create(hwnd_, instance_);
     if (tree_) tree_->SetDpi(dpi_);
     list_ = SizeList::Create(hwnd_, instance_);
-    if (list_) list_->SetDpi(dpi_);
+    if (list_) {
+        list_->SetColumns(WindowColumns(ShowShareColumn()));
+        list_->SetColumnWidths(ParseColumnWidths(ColumnWidthsSetting(false)));
+        list_->SetDpi(dpi_);
+    }
     source_ = std::make_unique<FolderSource>(hwnd_, kFolderLoaded);
     theme_.Watch(hwnd_, kThemeChanged);
     ApplyTheme();
@@ -334,7 +353,19 @@ void MainWindow::ShowSettingsMenu() {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     const bool installed = IsShellVerbInstalled();
-    AppendMenuW(menu, MF_STRING | (installed ? MF_CHECKED : MF_UNCHECKED), kMenuVerb, Text(IDS_MENU_VERB).c_str());
+    // Registered for all users by the installer: shown, but not switched here.
+    const bool byInstaller = IsShellVerbSetByInstaller();
+    if (byInstaller) {
+        AppendMenuW(menu, MF_STRING | MF_CHECKED | MF_GRAYED, kMenuVerb, Text(IDS_MENU_VERB_INSTALLER).c_str());
+    } else {
+        AppendMenuW(menu, MF_STRING | (installed ? MF_CHECKED : MF_UNCHECKED), kMenuVerb, Text(IDS_MENU_VERB).c_str());
+    }
+    const bool autostart = IsPanelAutostart();
+    AppendMenuW(menu, MF_STRING | (autostart ? MF_CHECKED : MF_UNCHECKED), kMenuAutostart,
+                Text(IDS_MENU_AUTOSTART).c_str());
+    const bool showShare = ShowShareColumn();
+    AppendMenuW(menu, MF_STRING | (showShare ? MF_CHECKED : MF_UNCHECKED), kMenuShowShare,
+                Text(IDS_MENU_SHOW_SHARE).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuPick, Text(IDS_MENU_PICK).c_str());
     // Language: follow Windows, or one of the built-in tables.
@@ -361,7 +392,21 @@ void MainWindow::ShowSettingsMenu() {
                        nullptr));
     DestroyMenu(menu);
     SetMoreHover(false);
-    if (cmd == kMenuVerb) {
+    if (cmd == kMenuAutostart) {
+        DWORD error = SetPanelAutostart(!autostart);
+        if (error != ERROR_SUCCESS) {
+            status_ = Format(IDS_ERR_SETTING, {std::to_wstring(error)});
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+    } else if (cmd == kMenuShowShare) {
+        DWORD error = SetShowShareColumn(!showShare);
+        if (error != ERROR_SUCCESS) {
+            status_ = Format(IDS_ERR_SETTING, {std::to_wstring(error)});
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        } else {
+            NotifySettingsChanged();  // this window and an open panel follow
+        }
+    } else if (cmd == kMenuVerb && !byInstaller) {
         DWORD error = installed ? RemoveShellVerb() : InstallShellVerb();
         if (error != ERROR_SUCCESS) {
             status_ = Format(IDS_ERR_VERB, {std::to_wstring(error)});
@@ -530,6 +575,11 @@ void MainWindow::PickFolder() {
 }
 
 LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
+    // A registered message: not a constant, so not a case label.
+    if (msg == SettingsChangedMessage() && msg != 0) {
+        if (list_) list_->SetColumns(WindowColumns(ShowShareColumn()));
+        return 0;
+    }
     switch (msg) {
         case WM_CREATE:
             OnCreate();
@@ -600,6 +650,9 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (pt.y < Scale(32) && pt.x < more.left) PickFolder();  // click on the path
             return 0;
         }
+        case kListColumnsResized:
+            if (list_) SetColumnWidthsSetting(false, FormatColumnWidths(list_->ColumnWidths()));
+            return 0;
         case kListContextMenu:
             ShowListMenu(static_cast<int>(wp), POINT{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
             return 0;
@@ -779,12 +832,39 @@ int RunCheck() {
     return result->status == LoadStatus::Ok ? 0 : 1;
 }
 
+// dirsize.exe --setting <autostart|share> <on|off>
+// For the installer: sets one per-user setting (HKCU) for the user running
+// this process and exits without a window. The installer runs it with the
+// credentials of the user who started Setup. Returns -1 when the command
+// line is not this form; otherwise the Win32 error (0 = done).
+int RunSetting() {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return -1;
+    int result = -1;
+    // The first argument exactly (not a substring search: a folder name may
+    // contain the same text).
+    if (argc == 4 && _wcsicmp(argv[1], L"--setting") == 0) {
+        const bool on = _wcsicmp(argv[3], L"on") == 0;
+        const bool off = _wcsicmp(argv[3], L"off") == 0;
+        result = ERROR_INVALID_PARAMETER;
+        if (on || off) {
+            if (_wcsicmp(argv[2], L"autostart") == 0) result = static_cast<int>(SetPanelAutostart(on));
+            else if (_wcsicmp(argv[2], L"share") == 0) result = static_cast<int>(SetShowShareColumn(on));
+        }
+    }
+    LocalFree(argv);
+    return result;
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     // Single-threaded apartment: UISettings (Windows Runtime) and the folder
     // picker (COM) are used on this thread.
     winrt::init_apartment(winrt::apartment_type::single_threaded);
+    // The installer's per-user settings: no window.
+    if (int setting = RunSetting(); setting >= 0) return setting;
     // Before any window or thread: worker threads load strings too.
     ApplyUiLanguage();
     if (wcsstr(GetCommandLineW(), L"--check")) return RunCheck();

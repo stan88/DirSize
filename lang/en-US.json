@@ -44,6 +44,9 @@
     "IDS_ERR_VERB": "Cannot change the context menu setting, error %1",
     "IDS_MENU_LANGUAGE": "Language",
     "IDS_MENU_LANG_AUTO": "Same as Windows",
-    "IDS_ERR_SETTING": "Cannot save the setting, error %1"
+    "IDS_ERR_SETTING": "Cannot save the setting, error %1",
+    "IDS_MENU_VERB_INSTALLER": "File Explorer context menu (set by the installer)",
+    "IDS_MENU_AUTOSTART": "Start the File Explorer panel when I sign in",
+    "IDS_MENU_SHOW_SHARE": "Show the Share column"
   }
 }
