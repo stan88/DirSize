@@ -80,6 +80,24 @@ DirSize 是依據 Microsoft 公開文件撰寫的獨立實作。
 安裝程式的繁體中文訊息是 Inno Setup 的官方翻譯，原封不動收錄，
 詳見 [installer/lang/README.md](installer/lang/README.md)。
 
+## 程式碼簽章政策（Code signing policy）
+
+正在申請 SignPath Foundation 給開源專案的免費簽章；0.1.0 沒有簽章。
+通過後，發行的檔案會這樣簽署：Free code signing provided by
+[SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org)
+（由 SignPath.io 免費提供簽章，憑證屬於 SignPath Foundation）。
+
+- 只簽由 GitHub Actions 從這個 repo 的原始碼建置的檔案；每次發行都要先手動核准才會簽章。
+- 提交與審查（Committers and reviewers）：[stan88](https://github.com/stan88)
+- 核准（Approvers）：[stan88](https://github.com/stan88)
+
+## 隱私
+
+This program will not transfer any information to other networked systems
+unless specifically requested by the user or the person installing or operating it.
+（除非使用者或安裝、操作的人明確要求，本程式不會把任何資訊傳到其他連網的系統。）
+DirSize 沒有任何網路程式碼；服務只回應同一台電腦上的程式（它的具名管道會拒絕遠端連線）。
+
 ## 參與開發
 
 乾淨實作與隱私規則請見 [CONTRIBUTING.zh-TW.md](CONTRIBUTING.zh-TW.md)。

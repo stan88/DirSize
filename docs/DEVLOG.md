@@ -1411,6 +1411,32 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - 草稿要在 Releases 頁面看過之後手動發布。
 - **權限**：只有 release job 有 `contents: write`（官方文件：`contents: write` allows the action to create a release），其他維持 `contents: read`。
 - **觸發**：`push` 下面同時寫 `branches` 和 `tags`。官方文件說只寫其中一種時，另一種推送不會觸發 workflow。
+- **0.1.0 發行**：推 tag `v0.1.0`（指向 c4b6e89）。版本檢查、建置、release job 都通過，產生草稿；使用者看過後手動 Publish。公開 API 顯示 `draft: false`、`prerelease: false`，附件是 setup.exe（2,587,795 bytes）和 portable.zip（241,253 bytes）。
+
+### 2026-11-12　SignPath 免費簽章：條件對照
+
+依 SignPath Foundation 的條件頁（signpath.org/terms）逐條對照：
+
+- **已符合**
+  - OSI 授權：MIT。
+  - 已經以要簽章的形式發行：0.1.0 的安裝檔和 zip。
+  - 有解除安裝功能。
+  - 安裝時會列出改變系統設定的選項。
+  - 檔案 metadata：三個 exe 的 ProductName 都是 `DirSize`，ProductVersion 都是 `project(VERSION)`。安裝檔本身也是 `DirSize`、`0.1.0`（本機讀 dist 裡的檔案確認）。
+  - 只從 CI 建置：release job。
+- **這次補上**
+  - README 中英版加「Code signing policy」：寫明 SignPath 規定的文字、角色（提交與審查、核准都是 stan88），以及「只簽 CI 建置的檔案、每次發行都要先手動核准」。
+  - README 中英版加「Privacy」：照 SignPath 提供的英文句子寫。
+    - 依據：原始碼沒有連結任何網路程式庫（`target_link_libraries` 沒有 winhttp、wininet、ws2_32），搜尋原始碼也沒有網路 API。
+    - 服務的具名管道使用 `PIPE_REJECT_REMOTE_CLIENTS`（`src/service/pipe_server.cpp`），拒絕遠端連線。
+  - `.github/release-notes.md` 加一行功能說明（條件是「下載頁要說明功能」），以及 Code signing policy、Privacy 的連結。0.1.0 已經發布的說明不會自動更新，要在網頁上手動編輯才會有。
+- **要使用者處理**
+  - GitHub 和 SignPath 帳號都要開啟多重驗證（MFA）。
+  - 填申請表：signpath.org/apply。表單是瀏覽器裡的 script 產生的，無法用指令讀取內容。
+- **待確認**
+  - 條件寫「所有元件都要用 OSI 認可的授權」。安裝檔裡包含 Inno Setup 的安裝程式本體和它的繁中翻譯，用的是 Inno Setup 自己的授權（`installer/lang/INNO-SETUP-LICENSE.txt`），不是 MIT 這類常見的授權。
+  - 它是否算在「元件」裡、是否被接受，我沒有查到 SignPath 的明確說明，要在申請時問。
+  - 如果不被接受，至少可以只簽三個 exe（三個 exe 都是我們自己的 MIT 程式碼）。
 
 ## 參考資料
 
@@ -1727,3 +1753,7 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | CI | [Variables（GITHUB_REF_NAME、GITHUB_REF_TYPE）](https://docs.github.com/en/actions/reference/workflows-and-actions/variables) |
 | CI | [REST：Create a release](https://docs.github.com/en/rest/releases/releases) |
 | CI | [actions/download-artifact](https://github.com/actions/download-artifact) |
+| 簽章 | [SignPath Foundation：OSS 專案的條件（Terms）](https://signpath.org/terms) |
+| 簽章 | [SignPath Foundation：申請](https://signpath.org/apply) |
+| 隱私 | [CreateNamedPipeW（PIPE_REJECT_REMOTE_CLIENTS）](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipew) |
+| CI | [Managing releases in a repository（草稿的 Publish release 在編輯頁）](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository) |

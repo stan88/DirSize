@@ -1,3 +1,6 @@
+DirSize shows the size of every folder on Windows: a window with a folder tree, a panel beside File Explorer, and "Open with DirSize" in the context menu.
+DirSize 顯示 Windows 上每個資料夾的大小：有資料夾樹的獨立視窗、檔案總管旁的面板，以及右鍵選單的「用 DirSize 開啟」。
+
 **Download** / **下載**
 
 - `DirSize-<version>-setup.exe`: the installer (the window, the File Explorer panel, the context menu and the indexing service). Administrator rights are needed.
@@ -11,3 +14,5 @@ The files are **not code-signed** yet, so Windows shows "Unknown publisher" and 
 檔案**還沒有數位簽章**，所以 Windows 會顯示「未知的發行者」，SmartScreen 也可能跳出警告。
 
 Built by GitHub Actions from the tagged source. / 由 GitHub Actions 從這個 tag 的原始碼建置。
+
+[Code signing policy](https://github.com/stan88/DirSize#code-signing-policy) · [Privacy](https://github.com/stan88/DirSize#privacy) / [程式碼簽章政策與隱私](https://github.com/stan88/DirSize/blob/main/README.zh-TW.md)

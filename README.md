@@ -90,6 +90,25 @@ but contains none of its code. See [docs/DEVLOG.md](docs/DEVLOG.md).
 The installer's Traditional Chinese messages are the official Inno Setup
 translation, included unchanged; see [installer/lang/README.md](installer/lang/README.md).
 
+## Code signing policy
+
+Signing is being applied for under the SignPath Foundation's free program
+for open-source projects; 0.1.0 is not signed. Once accepted, releases are
+signed with: Free code signing provided by [SignPath.io](https://signpath.io),
+certificate by [SignPath Foundation](https://signpath.org).
+
+- Only files built by GitHub Actions from this repository's source are
+  signed, and each release is approved by hand before signing.
+- Committers and reviewers: [stan88](https://github.com/stan88)
+- Approvers: [stan88](https://github.com/stan88)
+
+## Privacy
+
+This program will not transfer any information to other networked systems
+unless specifically requested by the user or the person installing or
+operating it. DirSize contains no networking code; the service answers only
+programs on the same computer (its named pipe rejects remote clients).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the clean-room and privacy rules.
