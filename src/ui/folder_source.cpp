@@ -1,6 +1,8 @@
 #include "ui/folder_source.h"
 
 #include <atomic>
+#include <objbase.h>
+
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -9,6 +11,8 @@
 #include "core/dir_listing.h"
 #include "core/dir_walker.h"
 #include "core/path_util.h"
+#include "ui/icon_key.h"
+#include "ui/shell_icons.h"
 
 namespace dirsize::ui {
 
@@ -194,6 +198,8 @@ void AddFiles(const std::wstring& path, FolderResult& r) {
 }
 
 void Worker(std::shared_ptr<FolderSource::State> s) {
+    // COM for SHGetFileInfoW (shell_icons.h).
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     for (;;) {
         std::wstring path;
         bool includeFiles = false;
@@ -235,9 +241,14 @@ void Worker(std::shared_ptr<FolderSource::State> s) {
         }
         if (!final || s->cancel) continue;  // cancelled: a newer request is waiting
         if (includeFiles && r->status == LoadStatus::Ok) AddFiles(path, *r);
+        // The rows' icons, here and not in the window (shell_icons.h).
+        std::vector<std::wstring> keys;
+        for (const ListItem& item : r->items) keys.push_back(IconKey(item.name, item.isFolder));
+        LoadShellIcons(keys);
         FolderResult* raw = r.release();
         if (!PostMessageW(s->notify, s->message, 0, reinterpret_cast<LPARAM>(raw))) delete raw;
     }
+    if (SUCCEEDED(com)) CoUninitialize();
     SetEvent(s->done);
 }
 

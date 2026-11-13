@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "ui/format.h"
+#include "ui/icon_key.h"
 #include "ui/language.h"
 #include "ui/list_model.h"
 #include "ui/string_ids.h"
@@ -706,6 +707,19 @@ void TestTreeReveal() {
     CHECK(m.SetChildren(L"E:\\", {L"data"}).empty() && m.Selected() == m.Find(L"E:\\data"));
 }
 
+// Icons by type (user request 2026-11-13, option A).
+void TestIconKey() {
+    CHECK(IconKey(L"Windows", true) == L"<folder>");
+    CHECK(IconKey(L"a.b.c", true) == L"<folder>");  // a folder with dots
+    CHECK(IconKey(L"Report.DOCX", false) == L".docx");
+    CHECK(IconKey(L"archive.tar.gz", false) == L".gz");
+    CHECK(IconKey(L".gitignore", false) == L".gitignore");
+    CHECK(IconKey(L"README", false) == L"<file>");
+    CHECK(IconKey(L"name.", false) == L"<file>");
+    CHECK(IconKey(L"", false) == L"<file>");
+    CHECK(DriveIconKey(L"C:\\") == L"<drive>C:\\");
+}
+
 void TestFormatPattern() {
     CHECK(FormatPattern(L"Total %1", {L"5 MB"}) == L"Total 5 MB");
     CHECK(FormatPattern(L"%2 (%1)", {L"C:", L"Disk"}) == L"Disk (C:)");
@@ -850,6 +864,7 @@ int main() {
     TestTreePaths();
     TestTreeModel();
     TestTreeReveal();
+    TestIconKey();
     TestFormatPattern();
     TestLanguagePick();
     TestLanguageIds();

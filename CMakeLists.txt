@@ -99,6 +99,7 @@ add_library(dirsize_ui_core STATIC
     src/ui/scroll_geometry.cpp
     src/ui/verb_command.cpp
     src/ui/language.cpp
+    src/ui/icon_key.cpp
 )
 target_include_directories(dirsize_ui_core PUBLIC src PRIVATE ${DIRSIZE_GEN})
 add_dependencies(dirsize_ui_core dirsize_lang)
@@ -116,6 +117,7 @@ add_library(dirsize_ui STATIC
     src/ui/folder_tree.cpp
     src/ui/folder_source.cpp
     src/ui/explorer_tracker.cpp
+    src/ui/shell_icons.cpp
 )
 target_link_libraries(dirsize_ui PUBLIC dirsize_ui_core dirsize_service WindowsApp dwmapi ole32 oleaut32 uuid shell32)
 

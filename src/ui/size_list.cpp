@@ -6,6 +6,8 @@
 #include <cstdlib>
 
 #include "ui/format.h"
+#include "ui/icon_key.h"
+#include "ui/shell_icons.h"
 #include "ui/strings.h"
 
 namespace dirsize::ui {
@@ -439,22 +441,30 @@ void SizeList::PaintRow(HDC dc, int index, const RECT& row) {
         r.right -= gap;
         switch (columns_[c]) {
             case Column::Name: {
-                // A small outline icon: folder (with a tab) or page.
-                const int iw = Scale(14), ih = Scale(11);
-                const int ix = r.left, iy = (row.top + row.bottom - ih) / 2;
-                HPEN pen = CreatePen(PS_SOLID, std::max(1, Scale(1)), secondary);
-                HGDIOBJ oldPen = SelectObject(dc, pen);
-                HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-                if (item.isFolder) {
-                    Rectangle(dc, ix, iy + Scale(2), ix + iw, iy + ih);
-                    Rectangle(dc, ix, iy, ix + iw / 2, iy + Scale(3));
-                } else {
-                    Rectangle(dc, ix + Scale(2), iy - Scale(1), ix + iw - Scale(2), iy + ih + Scale(1));
+                // The system icon of the type (shell_icons.h); an outline
+                // icon, folder (with a tab) or page, in high contrast or
+                // when there is none.
+                const int is = Scale(16);
+                const bool system = !palette_.highContrast &&
+                                    DrawShellIcon(dc, IconKey(item.name, item.isFolder), r.left,
+                                                  (row.top + row.bottom - is) / 2, is);
+                if (!system) {
+                    const int iw = Scale(14), ih = Scale(11);
+                    const int ix = r.left, iy = (row.top + row.bottom - ih) / 2;
+                    HPEN pen = CreatePen(PS_SOLID, std::max(1, Scale(1)), secondary);
+                    HGDIOBJ oldPen = SelectObject(dc, pen);
+                    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+                    if (item.isFolder) {
+                        Rectangle(dc, ix, iy + Scale(2), ix + iw, iy + ih);
+                        Rectangle(dc, ix, iy, ix + iw / 2, iy + Scale(3));
+                    } else {
+                        Rectangle(dc, ix + Scale(2), iy - Scale(1), ix + iw - Scale(2), iy + ih + Scale(1));
+                    }
+                    SelectObject(dc, oldBrush);
+                    SelectObject(dc, oldPen);
+                    DeleteObject(pen);
                 }
-                SelectObject(dc, oldBrush);
-                SelectObject(dc, oldPen);
-                DeleteObject(pen);
-                r.left += iw + Scale(8);
+                r.left += is + Scale(6);
                 std::wstring tag = item.accessible ? std::wstring() : L"  " + ui::Text(IDS_NO_ACCESS);
                 if (!tag.empty()) {
                     SIZE ts{};

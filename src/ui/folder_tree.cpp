@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include "ui/icon_key.h"
+#include "ui/shell_icons.h"
 #include "ui/strings.h"
 
 namespace dirsize::ui {
@@ -210,7 +212,14 @@ void FolderTree::PaintRow(HDC dc, const TreeRow& row, const RECT& r, bool select
         Polyline(dc, pts, 3);
     }
     x += Scale(18);
-    if (node->parent) {
+    // The system icon (shell_icons.h); outlines in high contrast or when
+    // there is none.
+    const int is = Scale(16);
+    const bool system = !palette_.highContrast &&
+                        DrawShellIcon(dc, node->parent ? IconKey(node->name, true) : DriveIconKey(node->name), x,
+                                      cy - is / 2, is);
+    if (system) {
+    } else if (node->parent) {
         // Folder outline, as in SizeList.
         const int iw = Scale(14), ih = Scale(11), iy = cy - ih / 2;
         Rectangle(dc, x, iy + Scale(2), x + iw, iy + ih);

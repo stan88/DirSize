@@ -1462,6 +1462,18 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 
 本機驗證：ui-tests 460 項通過（新增 FormatSize 的 0、1、1024、1025、上限值，以及資料夾／檔案混合排序）。啟動建置出的 `dirsize.exe` 截圖確認：KB 模式欄位加寬、數字完整；GB 模式兩位小數；資料夾在前、檔案在後，預設名稱正序。面板未在本機驗證（不操作開發機的檔案總管），待 VM 測試。
 
+### 2026-11-13　清單和資料夾樹改用 Windows 系統圖示（依類型）
+
+使用者要求圖示和 Windows 一致。兩種做法：A 依類型（資料夾、副檔名、磁碟機，不讀項目），B 每個項目的實際圖示（`.exe` 自己的圖示、特殊資料夾、desktop.ini 自訂圖示，要讀磁碟）。使用者選 A，看過效果再決定要不要加 B。資料夾樹一起改。
+
+- 取得方式：`SHGetFileInfoW` 加 `SHGFI_ICON | SHGFI_USEFILEATTRIBUTES`。文件說明這個旗標「不會嘗試存取檔案」，以 `"file.txt"` 這類名稱加上屬性查詢。本機磁碟機用根路徑查詢，才能取得它自己的圖示（系統磁碟、隨身碟等）；網路磁碟機仍用屬性查詢，不去連線（和 tree_loader 的規則相同）。
+- 沒有用 `SHGetImageList` + `IImageList::GetIcon`：`GetIcon` 需要在 manifest 指定 comctl32 v6，程式沒有指定（之前 `LoadIconMetric` 的序號問題也是這個原因）。
+- 執行緒：文件要求先初始化 COM，並建議在背景執行緒呼叫。所以清單（FolderSource）和資料夾樹（TreeLoader）的工作執行緒 `CoInitializeEx(STA)`，並在送出結果前先載入圖示；視窗只負責畫。快取是整個程序共用，以 mutex 保護，一種類型只查一次。
+- 量測（本機 probe，PerMonitorV2 程序，系統 DPI 168）：小圖示 28 px、大圖示 56 px，都跟著**系統 DPI**，不是各螢幕的 DPI。第一次查詢每種類型約 1–51 ms，再查約 1 ms。因此以 `DrawIconEx` 縮放到各螢幕的 16 DIP；夠大時用小圖示，否則用大圖示。
+- 高對比模式和查不到圖示時，仍畫原本的線框圖示（原設計依高對比指引，不使用彩色圖片）。
+- 截圖確認：資料夾、`.ps1` 等檔案類型、系統磁碟（有 Windows 標誌）、雲端磁碟各自的圖示都正確。ui-tests 469 項（新增 IconKey）。
+- 未驗證：不同 DPI 的第二台螢幕上的縮放品質（這台兩個螢幕 DPI 相同），請在 VM 或其他螢幕上看。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1786,3 +1798,8 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 簽章 | [Certum：Open Source Code Signing on SimplySign](https://shop.certum.eu/open-source-code-signing-on-simplysign.html) |
 | 隱私 | [CreateNamedPipeW（PIPE_REJECT_REMOTE_CLIENTS）](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipew) |
 | CI | [Managing releases in a repository（草稿的 Publish release 在編輯頁）](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository) |
+| 系統圖示 | [SHGetFileInfoW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shgetfileinfow) |
+| 系統圖示 | [SHGetImageList（尺寸與 DPI 說明；沒有採用）](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shgetimagelist) |
+| 系統圖示 | [IImageList::GetIcon（需要 comctl32 v6；沒有採用）](https://learn.microsoft.com/en-us/windows/win32/api/commoncontrols/nf-commoncontrols-iimagelist-geticon) |
+| 系統圖示 | [DrawIconEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-drawiconex) |
+| 系統圖示 | [GetIconInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-geticoninfo) |

@@ -1,11 +1,15 @@
 #include "ui/tree_loader.h"
 
+#include <objbase.h>
+
 #include <condition_variable>
 #include <deque>
 #include <mutex>
 #include <thread>
 
 #include "core/path_util.h"
+#include "ui/icon_key.h"
+#include "ui/shell_icons.h"
 #include "ui/strings.h"
 
 namespace dirsize::ui {
@@ -90,7 +94,12 @@ void ListDrives(const TreeLoader::State& s) {
     // Letters first, so the tree is never empty while a label is slow.
     auto first = std::make_unique<DriveList>(*list);
     Post(s, s.drivesMessage, first.release(), [](void* p) { delete static_cast<DriveList*>(p); });
-    bool changed = false;
+    // The drive icons (a local drive is asked for its own), after the
+    // letters are shown; the list is posted again so the tree repaints.
+    std::vector<std::wstring> keys;
+    for (const TreeRoot& root : list->roots) keys.push_back(DriveIconKey(root.path));
+    LoadShellIcons(keys);
+    bool changed = true;
     for (TreeRoot& root : list->roots) {
         UINT type = GetDriveTypeW(root.path.c_str());
         if (type == DRIVE_REMOTE || type == DRIVE_NO_ROOT_DIR) continue;
@@ -107,6 +116,10 @@ void ListDrives(const TreeLoader::State& s) {
 void Worker(std::shared_ptr<TreeLoader::State> s) {
     // No "insert a disk" dialogs from this thread (empty card readers).
     SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, nullptr);
+    // COM for SHGetFileInfoW (shell_icons.h); the folder icon before the
+    // first listing is posted.
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    LoadShellIcons({IconKey(L"", true)});
     for (;;) {
         std::wstring path;
         bool drives = false;
@@ -129,6 +142,7 @@ void Worker(std::shared_ptr<TreeLoader::State> s) {
         auto r = ListFolder(path);
         Post(*s, s->listingMessage, r.release(), [](void* p) { delete static_cast<TreeListing*>(p); });
     }
+    if (SUCCEEDED(com)) CoUninitialize();
     SetEvent(s->done);
 }
 
