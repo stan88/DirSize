@@ -4,7 +4,7 @@
 
 Windows 上快速、低資源的資料夾大小工具，顯示每個資料夾的大小。
 
-> 狀態：0.1.0，第一個發行版本。請到 [Releases](https://github.com/stan88/DirSize/releases) 下載。
+> 狀態：0.2.0。請到 [Releases](https://github.com/stan88/DirSize/releases) 下載。
 
 ## 功能
 

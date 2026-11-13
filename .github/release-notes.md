@@ -1,6 +1,17 @@
 DirSize shows the size of every folder on Windows: a window with a folder tree, a panel beside File Explorer, and "Open with DirSize" in the context menu.
 DirSize 顯示 Windows 上每個資料夾的大小：有資料夾樹的獨立視窗、檔案總管旁的面板，以及右鍵選單的「用 DirSize 開啟」。
 
+**New in 0.2.0** / **0.2.0 新增**
+
+- Size unit: automatic, KB or GB ("⋯" menu, the panel's right-click menu, the installer). Number columns widen so no digit is cut off.
+  顯示單位：自動、KB 或 GB（「⋯」選單、面板右鍵選單、安裝程式）。數字欄會自動加寬，不會切掉位數。
+- The File Explorer panel lists files too.
+  檔案總管面板也會列出檔案。
+- Folders are listed before files; the list starts sorted by name.
+  資料夾排在檔案前面；清單預設依名稱排序。
+- Windows' own icons for folders, file types and drives.
+  資料夾、檔案類型和磁碟機改用 Windows 的系統圖示。
+
 **Download** / **下載**
 
 - `DirSize-<version>-setup.exe`: the installer (the window, the File Explorer panel, the context menu and the indexing service). Administrator rights are needed.
