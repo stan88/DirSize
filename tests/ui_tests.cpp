@@ -66,6 +66,23 @@ void TestFormat() {
     CHECK(FormatCount(12345678) == L"12,345,678");
     CHECK(FormatCount(18446744073709551615ull) == L"18,446,744,073,709,551,615");
 
+    // Fixed units (user request 2026-11-13): KB rounded up as File
+    // Explorer does, GB with two decimals; both with thousands separators.
+    CHECK(FormatSize(0, SizeUnit::KB) == L"0 KB");
+    CHECK(FormatSize(1, SizeUnit::KB) == L"1 KB");
+    CHECK(FormatSize(1024, SizeUnit::KB) == L"1 KB");
+    CHECK(FormatSize(1025, SizeUnit::KB) == L"2 KB");
+    CHECK(FormatSize(608811614208ull, SizeUnit::KB) == L"594,542,592 KB");
+    CHECK(FormatSize(~0ull, SizeUnit::KB) == L"18,014,398,509,481,984 KB");  // no overflow
+    CHECK(FormatSize(0, SizeUnit::GB) == L"0.00 GB");
+    CHECK(FormatSize(1, SizeUnit::GB) == L"0.00 GB");
+    CHECK(FormatSize(5ull << 30, SizeUnit::GB) == L"5.00 GB");
+    CHECK(FormatSize((1234ull << 30) + (1ull << 29), SizeUnit::GB) == L"1,234.50 GB");
+    CHECK(FormatSize((1000ull << 30) - 1, SizeUnit::GB) == L"1,000.00 GB");  // rounded up into a new group
+    CHECK(FormatSize(999ull << 30, SizeUnit::GB) == L"999.00 GB");
+    CHECK(FormatSize(~0ull, SizeUnit::GB) == L"17,179,869,184.00 GB");
+    CHECK(FormatSize(1536, SizeUnit::Auto) == FormatBytes(1536));
+
     CHECK(FormatPercent(0, 0) == L"0.0%");
     CHECK(FormatPercent(1, 3) == L"33.3%");
     CHECK(FormatPercent(5, 5) == L"100.0%");
@@ -103,6 +120,23 @@ void TestSort() {
     CHECK(Names(v) == L"A file2 file10 b ");
     CHECK(!DefaultDescending(Column::Name));
     CHECK(DefaultDescending(Column::Allocated));
+
+    // Folders before files in every column and both directions, each group
+    // sorted on its own (user request 2026-11-13).
+    std::vector<ListItem> m = {Item(L"a.txt", 50, 50, 1), Item(L"Zeta", 10, 10, 1), Item(L"b.txt", 5, 5, 1),
+                               Item(L"Alpha", 20, 20, 1)};
+    m[1].isFolder = m[3].isFolder = true;
+    SortItems(m, Column::Name, false);
+    CHECK(Names(m) == L"Alpha Zeta a.txt b.txt ");
+    SortItems(m, Column::Name, true);
+    CHECK(Names(m) == L"Zeta Alpha b.txt a.txt ");
+    SortItems(m, Column::Allocated, true);
+    CHECK(Names(m) == L"Alpha Zeta a.txt b.txt ");
+    SortItems(m, Column::Allocated, false);
+    CHECK(Names(m) == L"Zeta Alpha b.txt a.txt ");
+    SortItems(m, Column::Size, true);
+    CHECK(Names(m) == L"Alpha Zeta a.txt b.txt ");
+    static_assert(kDefaultSortColumn == Column::Name);
 }
 
 bool Has(const std::vector<Column>& v, Column c) { return std::find(v.begin(), v.end(), c) != v.end(); }

@@ -6,12 +6,19 @@
 
 #include <string>
 
+#include "ui/format.h"
+
 namespace dirsize::ui {
 
 // "ShowShare" (REG_DWORD): show the share column (bar and percentage) in
 // the window and the panel. Missing = shown (the default).
 bool ShowShareColumn();
 DWORD SetShowShareColumn(bool show);  // ERROR_SUCCESS or the Win32 error
+
+// "SizeUnit" (REG_DWORD): 0 automatic, 1 KB, 2 GB (format.h FormatSize).
+// Missing or another value = automatic (the default).
+SizeUnit SizeUnitSetting();
+DWORD SetSizeUnitSetting(SizeUnit unit);
 
 // Column widths the user dragged ("PanelColumns" / "WindowColumns", REG_SZ,
 // list_model.h ParseColumnWidths). Empty when none.

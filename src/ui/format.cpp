@@ -37,6 +37,31 @@ std::wstring FormatCount(std::uint64_t count) {
     return out;
 }
 
+std::wstring FormatSize(std::uint64_t bytes, SizeUnit unit) {
+    switch (unit) {
+        case SizeUnit::KB:
+            // Not (bytes + 1023) / 1024: that overflows near the top.
+            return FormatCount(bytes / 1024 + (bytes % 1024 != 0 ? 1 : 0)) + L" KB";
+        case SizeUnit::GB: {
+            wchar_t buffer[48];
+            std::swprintf(buffer, 48, L"%.2f", static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
+            // Separators in the printed integer part, so a value rounded up
+            // to the next thousand (999.999 -> "1000.00") gets one too.
+            std::wstring text = buffer;
+            const size_t dot = text.find(L'.');
+            const std::wstring whole = text.substr(0, dot), rest = dot == std::wstring::npos ? L"" : text.substr(dot);
+            std::wstring out;
+            for (size_t i = 0; i < whole.size(); ++i) {
+                if (i != 0 && (whole.size() - i) % 3 == 0) out += L',';
+                out += whole[i];
+            }
+            return out + rest + L" GB";
+        }
+        case SizeUnit::Auto: break;
+    }
+    return FormatBytes(bytes);
+}
+
 std::wstring FormatPercent(std::uint64_t part, std::uint64_t whole) {
     double percent = whole == 0 ? 0.0 : static_cast<double>(part) * 100.0 / static_cast<double>(whole);
     wchar_t buffer[32];

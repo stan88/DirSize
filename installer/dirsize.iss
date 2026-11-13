@@ -59,6 +59,14 @@ en.AutostartTask=Start the File Explorer panel when I sign in
 zhtw.AutostartTask=登入時自動啟動檔案總管面板
 en.ShareTask=Show the Share column (bar and percentage) in DirSize and the panel
 zhtw.ShareTask=在 DirSize 和面板顯示比例欄（長條和百分比）
+en.UnitTask=Size unit in DirSize and the panel:
+zhtw.UnitTask=DirSize 和面板的顯示單位：
+en.UnitAuto=Automatic (B, KB, MB, GB...)
+zhtw.UnitAuto=自動（B、KB、MB、GB…）
+en.UnitKB=KB
+zhtw.UnitKB=KB
+en.UnitGB=GB
+zhtw.UnitGB=GB
 en.StartPanel=Start the File Explorer panel now
 zhtw.StartPanel=現在啟動檔案總管面板
 en.ServiceFailed=The DirSize service could not be installed (code %1). DirSize still works, but reads folders more slowly.
@@ -73,6 +81,12 @@ zhtw.ServiceFailed=無法安裝 DirSize 服務（代碼 %1）。DirSize 仍然�
 Name: "contextmenu"; Description: "{cm:ContextMenuTask}"
 Name: "autostart"; Description: "{cm:AutostartTask}"
 Name: "share"; Description: "{cm:ShareTask}"
+; The size unit: one of three (exclusive child tasks, the Inno Setup [Tasks]
+; help). Clearing the parent leaves the unit at automatic.
+Name: "unit"; Description: "{cm:UnitTask}"
+Name: "unit\auto"; Description: "{cm:UnitAuto}"; Flags: exclusive
+Name: "unit\kb"; Description: "{cm:UnitKB}"; Flags: exclusive unchecked
+Name: "unit\gb"; Description: "{cm:UnitGB}"; Flags: exclusive unchecked
 
 [Files]
 Source: "{#BinDir}\dirsize.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -107,6 +121,9 @@ Filename: "{app}\dirsize.exe"; Parameters: "--setting autostart on"; Flags: runa
 Filename: "{app}\dirsize.exe"; Parameters: "--setting autostart off"; Flags: runasoriginaluser runhidden; Tasks: not autostart
 Filename: "{app}\dirsize.exe"; Parameters: "--setting share on"; Flags: runasoriginaluser runhidden; Tasks: share
 Filename: "{app}\dirsize.exe"; Parameters: "--setting share off"; Flags: runasoriginaluser runhidden; Tasks: not share
+Filename: "{app}\dirsize.exe"; Parameters: "--setting unit kb"; Flags: runasoriginaluser runhidden; Tasks: unit\kb
+Filename: "{app}\dirsize.exe"; Parameters: "--setting unit gb"; Flags: runasoriginaluser runhidden; Tasks: unit\gb
+Filename: "{app}\dirsize.exe"; Parameters: "--setting unit auto"; Flags: runasoriginaluser runhidden; Tasks: not unit\kb and not unit\gb
 Filename: "{app}\dirsize.exe"; Description: "{cm:LaunchProgram,DirSize}"; Flags: postinstall nowait skipifsilent
 Filename: "{app}\dirsize.exe"; Parameters: "--panel"; Description: "{cm:StartPanel}"; Flags: postinstall nowait skipifsilent
 

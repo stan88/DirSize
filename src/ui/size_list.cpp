@@ -69,6 +69,7 @@ SizeList::~SizeList() {
 
 void SizeList::SetColumns(const std::vector<Column>& columns) {
     columns_ = columns;
+    UpdateFit();
     const Column sort = FallbackSortColumn(sortColumn_, columns_);
     if (sort != sortColumn_) {
         // Share -> Allocated keeps the order (same key); others restart.
@@ -89,6 +90,7 @@ void SizeList::SetItems(std::vector<ListItem> items, std::uint64_t shareTotal, b
     tipRow_ = -1;
     items_ = std::move(items);
     shareTotal_ = shareTotal;
+    UpdateFit();
     Sort();
     selected_ = -1;
     top_ = 0;
@@ -121,6 +123,50 @@ void SizeList::SetDpi(UINT dpi) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void SizeList::SetUnit(SizeUnit unit) {
+    if (unit == unit_) return;
+    unit_ = unit;
+    UpdateFit();
+    UpdateScroll();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+int SizeList::FitDip(Column c) const {
+    const int i = static_cast<int>(c);
+    return i >= 0 && i < 5 ? fitDip_[i] : 0;
+}
+
+void SizeList::UpdateFit() {
+    for (int& f : fitDip_) f = 0;
+    if (!hwnd_) return;
+    HDC dc = GetDC(hwnd_);
+    if (!dc) return;
+    HGDIOBJ old = SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT));
+    auto width = [&](const std::wstring& t) {
+        SIZE size{};
+        GetTextExtentPoint32W(dc, t.c_str(), static_cast<int>(t.size()), &size);
+        return static_cast<int>(size.cx);
+    };
+    for (Column c : columns_) {
+        if (c != Column::Size && c != Column::Allocated && c != Column::Files) continue;
+        // The title with a sort arrow, so the column does not jump when the
+        // sort changes.
+        int px = width(ui::Text(TitleId(c)) + L" ▾");
+        for (const ListItem& item : items_) {
+            std::wstring t = c == Column::Size        ? FormatSize(item.logicalBytes, unit_)
+                             : c == Column::Allocated ? FormatSize(item.allocatedBytes, unit_)
+                             : item.isFolder          ? FormatCount(item.files)
+                                                      : std::wstring();
+            px = std::max(px, width(t));
+        }
+        // PaintRow keeps a gap at the right of each column.
+        px += Scale(8) + Scale(4);
+        fitDip_[static_cast<int>(c)] = (px * 96 + static_cast<int>(dpi_) - 1) / static_cast<int>(dpi_);
+    }
+    SelectObject(dc, old);
+    ReleaseDC(hwnd_, dc);
+}
+
 void SizeList::SetCompact(bool compact) {
     compact_ = compact;
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -136,10 +182,17 @@ void SizeList::SetColumnWidths(const std::vector<ColumnWidth>& widths) {
 // otherwise -1 (it fills the rest).
 int SizeList::ColumnDip(Column c) const {
     if (c == Column::Name && growParent_) return -1;
-    for (const ColumnWidth& w : widths_) {
-        if (w.column == c) return w.dip;
+    if (c == Column::Name) {
+        for (const ColumnWidth& w : widths_) {
+            if (w.column == c) return w.dip;
+        }
+        return -1;
     }
-    return c == Column::Name ? -1 : ColumnWidthDip(c, compact_);
+    int dip = ColumnWidthDip(c, compact_);
+    for (const ColumnWidth& w : widths_) {
+        if (w.column == c) dip = w.dip;
+    }
+    return std::max(dip, FitDip(c));
 }
 
 std::vector<int> SizeList::ColumnPixels(int available) const {
@@ -168,6 +221,7 @@ void SizeList::UpdateMetrics() {
     ReleaseDC(hwnd_, dc);
     rowHeight_ = tm.tmHeight + Scale(10);
     headerHeight_ = tm.tmHeight + Scale(12);
+    UpdateFit();  // new font or DPI
 }
 
 int SizeList::VisibleRows() const {
@@ -288,10 +342,11 @@ void SizeList::SetColumnDip(Column c, int dip) {
 // (kListGrowParent, sent so the layout follows at once); in the window the
 // name column takes the difference.
 void SizeList::ApplyDrag(int dip) {
+    const Column c = columns_[resizing_];
+    if (c != Column::Name) dip = std::max(dip, FitDip(c));  // not narrower than its values
     const int delta = dip - resizeLastDip_;
     if (delta == 0) return;
     resizeLastDip_ = dip;
-    const Column c = columns_[resizing_];
     // In the panel the name column has no width of its own (it fills).
     if (c != Column::Name || !growParent_) SetColumnDip(c, dip);
     if (growParent_) SendMessageW(parent_, kListGrowParent, static_cast<WPARAM>(delta), 0);
@@ -413,10 +468,10 @@ void SizeList::PaintRow(HDC dc, int index, const RECT& row) {
                 break;
             }
             case Column::Size:
-                Text(dc, FormatBytes(item.logicalBytes), r, DT_RIGHT, text);
+                Text(dc, FormatSize(item.logicalBytes, unit_), r, DT_RIGHT, text);
                 break;
             case Column::Allocated:
-                Text(dc, FormatBytes(item.allocatedBytes), r, DT_RIGHT, text);
+                Text(dc, FormatSize(item.allocatedBytes, unit_), r, DT_RIGHT, text);
                 break;
             case Column::Files:
                 Text(dc, item.isFolder ? FormatCount(item.files) : std::wstring(), r, DT_RIGHT, secondary);

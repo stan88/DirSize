@@ -19,7 +19,8 @@ struct ListItem {
 
 enum class Column { Name, Size, Allocated, Share, Files };
 
-// Sorts in place. Share sorts like Allocated (the bar is the allocated
+// Sorts in place. Folders always come before files, in both directions,
+// and each group is sorted by the column. Share sorts like Allocated (the bar is the allocated
 // share). Ties, and Name, use the user's locale order with digits compared
 // as numbers (CompareStringEx, NORM_IGNORECASE | SORT_DIGITSASNUMBERS), so
 // "file2" comes before "file10" as in Explorer.
@@ -28,6 +29,9 @@ void SortItems(std::vector<ListItem>& items, Column column, bool descending);
 // Name order of the list and the folder tree: the user's locale with digits
 // compared as numbers, ignoring case. Negative, zero or positive.
 int CompareNames(const std::wstring& a, const std::wstring& b);
+
+// The list starts sorted by name, ascending (user request 2026-11-13).
+constexpr Column kDefaultSortColumn = Column::Name;
 
 // The default order of a column the first time it is clicked: names
 // ascending, numbers descending (largest first).

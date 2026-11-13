@@ -46,3 +46,7 @@
 #define IDS_MENU_VERB_INSTALLER 201
 #define IDS_MENU_AUTOSTART      202
 #define IDS_MENU_SHOW_SHARE     203
+#define IDS_MENU_UNIT           204
+#define IDS_MENU_UNIT_AUTO      205
+#define IDS_MENU_UNIT_KB        206
+#define IDS_MENU_UNIT_GB        207

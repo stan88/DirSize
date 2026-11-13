@@ -130,6 +130,14 @@ private:
     HWINEVENTHOOK minimizeHook_ = nullptr;
     std::wstring folder_;
     std::wstring status_;
+    // The last loaded folder's totals, to rebuild the status line when the
+    // size unit changes.
+    bool haveTotals_ = false;
+    std::uint64_t totalAllocated_ = 0;
+    bool fromService_ = false;
+    ServiceNote note_ = ServiceNote::None;
+    SizeUnit unit_ = SizeUnit::Auto;
+    void BuildStatus();
     std::uint64_t request_ = 0;
     PanelSide side_ = PanelSide::OutsideRight;
     UINT dpi_ = 96;
@@ -198,8 +206,10 @@ void Panel::OnCreate() {
     rounded_ = SUCCEEDED(DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner)));
     UpdateFonts();
     showShare_ = ShowShareColumn();
+    unit_ = SizeUnitSetting();
     list_ = SizeList::Create(hwnd_, instance_);
     if (list_) {
+        list_->SetUnit(unit_);
         list_->SetColumns(PanelColumns(showShare_));
         list_->SetCompact(true);
         list_->SetColumnWidths(ParseColumnWidths(ColumnWidthsSetting(true)));
@@ -252,9 +262,10 @@ void Panel::OnExplorer(std::unique_ptr<ExplorerUpdate> u) {
         folder_ = u->folder;
         if (!folder_.empty() && list_) {
             status_ = Text(IDS_LOADING);
+            haveTotals_ = false;
             list_->SetItems({}, 0, false);
             list_->SetMessage(Text(IDS_LOADING));
-            request_ = source_->Request(folder_, false);
+            request_ = source_->Request(folder_, true);  // files too (user request 2026-11-13)
         }
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
@@ -286,14 +297,23 @@ void Panel::OnLoaded(std::unique_ptr<FolderResult> r) {
         case LoadStatus::Ok: {
             list_->SetMessage(L"");
             list_->SetItems(std::move(r->items), r->totalAllocated, false);
-            status_ = Text(IDS_COL_ALLOCATED) + L" " + FormatBytes(r->totalAllocated) + L"  \u00B7  " +
-                      Text(r->fromService ? IDS_SRC_SERVICE : IDS_SRC_WALK);
-            std::wstring note = NoteText(r->note);
-            if (!note.empty()) status_ += L"  \u00B7  " + note;
+            haveTotals_ = true;
+            totalAllocated_ = r->totalAllocated;
+            fromService_ = r->fromService;
+            note_ = r->note;
+            BuildStatus();
             break;
         }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void Panel::BuildStatus() {
+    if (!haveTotals_) return;
+    status_ = Text(IDS_COL_ALLOCATED) + L" " + FormatSize(totalAllocated_, unit_) + L"  \u00B7  " +
+              Text(fromService_ ? IDS_SRC_SERVICE : IDS_SRC_WALK);
+    std::wstring note = NoteText(note_);
+    if (!note.empty()) status_ += L"  \u00B7  " + note;
 }
 
 void Panel::UpdateVisibility() {
@@ -488,7 +508,7 @@ void Panel::OnSizeEnd() {
     Place(true);
 }
 
-// Right-click on the panel: its settings (only the share column so far).
+// Right-click on the panel: its settings (share column, size unit).
 // The panel never takes the focus (WS_EX_NOACTIVATE), but a popup menu
 // needs its owner in the foreground to close when the user clicks
 // elsewhere (TrackPopupMenu remarks), so the panel is brought forward for
@@ -498,12 +518,27 @@ void Panel::ShowMenu(POINT screen) {
     if (!menu) return;
     const bool showShare = ShowShareColumn();
     AppendMenuW(menu, MF_STRING | (showShare ? MF_CHECKED : MF_UNCHECKED), 1, Text(IDS_MENU_SHOW_SHARE).c_str());
+    // Size unit: commands 10 + SizeUnit.
+    const SizeUnit unit = SizeUnitSetting();
+    if (HMENU unitMenu = CreatePopupMenu()) {
+        const struct { SizeUnit unit; UINT text; } units[] = {
+            {SizeUnit::Auto, IDS_MENU_UNIT_AUTO}, {SizeUnit::KB, IDS_MENU_UNIT_KB}, {SizeUnit::GB, IDS_MENU_UNIT_GB}};
+        for (const auto& u : units) {
+            AppendMenuW(unitMenu, MF_STRING | (u.unit == unit ? MF_CHECKED : MF_UNCHECKED),
+                        10 + static_cast<UINT>(u.unit), Text(u.text).c_str());
+        }
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(unitMenu), Text(IDS_MENU_UNIT).c_str());
+    }
     SetForegroundWindow(hwnd_);
     UINT cmd = static_cast<UINT>(
         TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y, 0, hwnd_, nullptr));
     DestroyMenu(menu);
     if (target_ && IsWindow(target_)) SetForegroundWindow(target_);
     if (cmd == 1 && SetShowShareColumn(!showShare) == ERROR_SUCCESS) NotifySettingsChanged();
+    if (cmd >= 10 && cmd <= 12) {
+        const SizeUnit chosen = static_cast<SizeUnit>(cmd - 10);
+        if (chosen != unit && SetSizeUnitSetting(chosen) == ERROR_SUCCESS) NotifySettingsChanged();
+    }
 }
 
 LRESULT Panel::Handle(UINT msg, WPARAM wp, LPARAM lp) {
@@ -514,6 +549,13 @@ LRESULT Panel::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             showShare_ = show;
             if (list_) list_->SetColumns(PanelColumns(showShare_));
             Place(false);  // narrower or wider by the share column
+        }
+        const SizeUnit unit = SizeUnitSetting();
+        if (unit != unit_) {
+            unit_ = unit;
+            if (list_) list_->SetUnit(unit_);
+            BuildStatus();
+            InvalidateRect(hwnd_, nullptr, FALSE);
         }
         return 0;
     }

@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "ui/format.h"
 #include "ui/list_model.h"
 #include "ui/palette.h"
 #include "ui/scroll_strip.h"
@@ -48,6 +49,8 @@ public:
     void SetMessage(const std::wstring& message);
     void SetPalette(const Palette& palette);
     void SetDpi(UINT dpi);
+    // The unit of the size columns (settings.h SizeUnitSetting).
+    void SetUnit(SizeUnit unit);
     // Narrower number and share columns, for the Explorer panel.
     void SetCompact(bool compact);
     // The parent (the Explorer panel) changes its width when a column is
@@ -58,7 +61,8 @@ public:
     // (the name column takes the rest); a column not listed has its default.
     void SetColumnWidths(const std::vector<ColumnWidth>& widths);
     const std::vector<ColumnWidth>& ColumnWidths() const { return widths_; }
-    // The user's width or the default; -1 for a name column that fills the
+    // The user's width or the default, but never narrower than the widest
+    // value of the column (FitDip); -1 for a name column that fills the
     // rest (always in the panel; in the window until the user sets one).
     int ColumnDip(Column c) const;
 
@@ -72,6 +76,11 @@ private:
     LRESULT Handle(UINT msg, WPARAM wp, LPARAM lp);
 
     void UpdateMetrics();
+    // Measures the widest text of each number column (values and title) so
+    // a number is never cut off: right-aligned text loses its first digits
+    // silently ("594,542,592 KB" would read "42,592 KB").
+    void UpdateFit();
+    int FitDip(Column c) const;
     void UpdateScroll();
     int VisibleRows() const;
     void Paint(HDC dc, const RECT& client);
@@ -111,10 +120,12 @@ private:
     int headerHeight_ = 26;
     int top_ = 0;  // first visible row
     int selected_ = -1;
-    Column sortColumn_ = Column::Allocated;
-    bool sortDescending_ = true;
+    Column sortColumn_ = kDefaultSortColumn;
+    bool sortDescending_ = DefaultDescending(kDefaultSortColumn);
     int wheelRemainder_ = 0;
     bool compact_ = false;
+    SizeUnit unit_ = SizeUnit::Auto;
+    int fitDip_[5] = {};  // per Column: the narrowest width that shows every value
     ScrollStrip scroll_;
     ScrollStrip hscroll_;              // sideways, when the columns are wider than the list
     int scrollX_ = 0;                  // pixels scrolled sideways

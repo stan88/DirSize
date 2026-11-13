@@ -56,6 +56,7 @@ constexpr UINT kMenuExplore = 103;
 constexpr UINT kMenuRefresh = 104;
 constexpr UINT kMenuAutostart = 105;
 constexpr UINT kMenuShowShare = 106;
+constexpr UINT kMenuUnitFirst = 110;  // + SizeUnit
 constexpr UINT kMenuLangAuto = 199;  // then kMenuLangFirst + index into Languages()
 constexpr UINT kMenuLangFirst = 200;
 constexpr int kTreeWidthDip = 260;
@@ -137,6 +138,14 @@ private:
     std::wstring path_;
     std::uint64_t request_ = 0;
     std::wstring status_;
+    // The last loaded folder's totals, to rebuild the status line when the
+    // size unit changes.
+    bool haveTotals_ = false;
+    std::uint64_t totalLogical_ = 0, totalAllocated_ = 0, totalFiles_ = 0;
+    bool fromService_ = false;
+    ServiceNote note_ = ServiceNote::None;
+    SizeUnit unit_ = SizeUnit::Auto;
+    void BuildStatus();
     UINT dpi_ = 96;
     HFONT titleFont_ = nullptr;
     HFONT font_ = nullptr;
@@ -200,6 +209,8 @@ void MainWindow::OnCreate() {
     if (tree_) tree_->SetDpi(dpi_);
     list_ = SizeList::Create(hwnd_, instance_);
     if (list_) {
+        unit_ = SizeUnitSetting();
+        list_->SetUnit(unit_);
         list_->SetColumns(WindowColumns(ShowShareColumn()));
         list_->SetColumnWidths(ParseColumnWidths(ColumnWidthsSetting(false)));
         list_->SetDpi(dpi_);
@@ -366,6 +377,16 @@ void MainWindow::ShowSettingsMenu() {
     const bool showShare = ShowShareColumn();
     AppendMenuW(menu, MF_STRING | (showShare ? MF_CHECKED : MF_UNCHECKED), kMenuShowShare,
                 Text(IDS_MENU_SHOW_SHARE).c_str());
+    const SizeUnit unit = SizeUnitSetting();
+    if (HMENU unitMenu = CreatePopupMenu()) {
+        const struct { SizeUnit unit; UINT text; } units[] = {
+            {SizeUnit::Auto, IDS_MENU_UNIT_AUTO}, {SizeUnit::KB, IDS_MENU_UNIT_KB}, {SizeUnit::GB, IDS_MENU_UNIT_GB}};
+        for (const auto& u : units) {
+            AppendMenuW(unitMenu, MF_STRING | (u.unit == unit ? MF_CHECKED : MF_UNCHECKED),
+                        kMenuUnitFirst + static_cast<UINT>(u.unit), Text(u.text).c_str());
+        }
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(unitMenu), Text(IDS_MENU_UNIT).c_str());
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuPick, Text(IDS_MENU_PICK).c_str());
     // Language: follow Windows, or one of the built-in tables.
@@ -405,6 +426,17 @@ void MainWindow::ShowSettingsMenu() {
             InvalidateRect(hwnd_, nullptr, FALSE);
         } else {
             NotifySettingsChanged();  // this window and an open panel follow
+        }
+    } else if (cmd >= kMenuUnitFirst && cmd <= kMenuUnitFirst + 2) {
+        const SizeUnit chosen = static_cast<SizeUnit>(cmd - kMenuUnitFirst);
+        if (chosen != unit) {
+            DWORD error = SetSizeUnitSetting(chosen);
+            if (error != ERROR_SUCCESS) {
+                status_ = Format(IDS_ERR_SETTING, {std::to_wstring(error)});
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            } else {
+                NotifySettingsChanged();  // this window and an open panel follow
+            }
         }
     } else if (cmd == kMenuVerb && !byInstaller) {
         DWORD error = installed ? RemoveShellVerb() : InstallShellVerb();
@@ -487,6 +519,7 @@ void MainWindow::Navigate(const std::wstring& path, bool refresh, bool fromTree)
     }
     SetWindowTextW(hwnd_, (path_ + L" - " + Text(IDS_APP_TITLE)).c_str());
     status_ = Text(IDS_LOADING);
+    haveTotals_ = false;
     if (list_ && !refresh) {
         list_->SetItems({}, 0, false);
         list_->SetMessage(Text(IDS_LOADING));
@@ -526,16 +559,27 @@ void MainWindow::OnLoaded(std::unique_ptr<FolderResult> r) {
             const bool keep = true;  // a refresh of the same folder keeps the position
             list_->SetMessage(L"");
             list_->SetItems(std::move(r->items), r->totalAllocated, keep);
-            status_ = Format(IDS_TOTAL, {FormatBytes(r->totalLogical)}) + L"  \u00B7  " +
-                      Format(IDS_STATUS_ALLOCATED, {FormatBytes(r->totalAllocated)}) + L"  \u00B7  " +
-                      Format(IDS_FILE_COUNT, {FormatCount(r->totalFiles)}) + L"  \u00B7  " +
-                      Text(r->fromService ? IDS_SRC_SERVICE : IDS_SRC_WALK);
-            std::wstring note = NoteText(r->note);
-            if (!note.empty()) status_ += L"  \u00B7  " + note;
+            haveTotals_ = true;
+            totalLogical_ = r->totalLogical;
+            totalAllocated_ = r->totalAllocated;
+            totalFiles_ = r->totalFiles;
+            fromService_ = r->fromService;
+            note_ = r->note;
+            BuildStatus();
             break;
         }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::BuildStatus() {
+    if (!haveTotals_) return;
+    status_ = Format(IDS_TOTAL, {FormatSize(totalLogical_, unit_)}) + L"  \u00B7  " +
+              Format(IDS_STATUS_ALLOCATED, {FormatSize(totalAllocated_, unit_)}) + L"  \u00B7  " +
+              Format(IDS_FILE_COUNT, {FormatCount(totalFiles_)}) + L"  \u00B7  " +
+              Text(fromService_ ? IDS_SRC_SERVICE : IDS_SRC_WALK);
+    std::wstring note = NoteText(note_);
+    if (!note.empty()) status_ += L"  \u00B7  " + note;
 }
 
 void MainWindow::OnTreeSelect() {
@@ -578,6 +622,13 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     // A registered message: not a constant, so not a case label.
     if (msg == SettingsChangedMessage() && msg != 0) {
         if (list_) list_->SetColumns(WindowColumns(ShowShareColumn()));
+        const SizeUnit unit = SizeUnitSetting();
+        if (unit != unit_) {
+            unit_ = unit;
+            if (list_) list_->SetUnit(unit_);
+            BuildStatus();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
         return 0;
     }
     switch (msg) {
@@ -833,6 +884,7 @@ int RunCheck() {
 }
 
 // dirsize.exe --setting <autostart|share> <on|off>
+// dirsize.exe --setting unit <auto|kb|gb>
 // For the installer: sets one per-user setting (HKCU) for the user running
 // this process and exits without a window. The installer runs it with the
 // credentials of the user who started Setup. Returns -1 when the command
@@ -844,7 +896,12 @@ int RunSetting() {
     int result = -1;
     // The first argument exactly (not a substring search: a folder name may
     // contain the same text).
-    if (argc == 4 && _wcsicmp(argv[1], L"--setting") == 0) {
+    if (argc == 4 && _wcsicmp(argv[1], L"--setting") == 0 && _wcsicmp(argv[2], L"unit") == 0) {
+        result = ERROR_INVALID_PARAMETER;
+        if (_wcsicmp(argv[3], L"auto") == 0) result = static_cast<int>(SetSizeUnitSetting(SizeUnit::Auto));
+        else if (_wcsicmp(argv[3], L"kb") == 0) result = static_cast<int>(SetSizeUnitSetting(SizeUnit::KB));
+        else if (_wcsicmp(argv[3], L"gb") == 0) result = static_cast<int>(SetSizeUnitSetting(SizeUnit::GB));
+    } else if (argc == 4 && _wcsicmp(argv[1], L"--setting") == 0) {
         const bool on = _wcsicmp(argv[3], L"on") == 0;
         const bool off = _wcsicmp(argv[3], L"off") == 0;
         result = ERROR_INVALID_PARAMETER;

@@ -47,6 +47,10 @@
     "IDS_ERR_SETTING": "Cannot save the setting, error %1",
     "IDS_MENU_VERB_INSTALLER": "File Explorer context menu (set by the installer)",
     "IDS_MENU_AUTOSTART": "Start the File Explorer panel when I sign in",
-    "IDS_MENU_SHOW_SHARE": "Show the Share column"
+    "IDS_MENU_SHOW_SHARE": "Show the Share column",
+    "IDS_MENU_UNIT": "Size unit",
+    "IDS_MENU_UNIT_AUTO": "Automatic",
+    "IDS_MENU_UNIT_KB": "KB",
+    "IDS_MENU_UNIT_GB": "GB"
   }
 }

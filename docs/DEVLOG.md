@@ -1447,6 +1447,21 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - 付費：Azure Artifact Signing 約每月 9.99 美元；OV 憑證每年 150–300 美元；EV 憑證每年 400 美元以上（皆為該頁所列）。Certum 的開源簽章憑證（發給個人）官方商店標示雲端版 €49 起。
 - **決定**（使用者）：暫時不簽章。README 中英版的「Code signing policy」改成「目前沒有簽章，之後重新申請」，保留角色和規則，重新申請時可以直接使用。
 
+### 2026-11-13　顯示單位選項；面板列出檔案；資料夾和檔案分組排序
+
+使用者要求三項（附面板截圖）：
+
+- **顯示單位**：「自動／KB／GB」三選一，預設自動（使用者選擇）。設定存在 HKCU `SizeUnit`（REG_DWORD：0 自動、1 KB、2 GB；缺少或其他值都當成自動）。
+  - KB：以 1024 bytes 為單位，**無條件進位**（同檔案總管：1 byte 顯示 1 KB，0 byte 顯示 0 KB），加千分位，例如 `594,542,592 KB`。不用 `(bytes + 1023) / 1024`，因為接近上限會溢位。
+  - GB：以 1024³ bytes 為單位，固定兩位小數，加千分位，例如 `1,234.50 GB`。先印出再加千分位，進位到下一千（`1000.00`）時也會加上逗號。
+  - 主視窗「⋯」選單和面板右鍵選單都有「顯示單位」子選單；切換後透過既有的 `DirSize.SettingsChanged` 廣播，視窗和面板立即更新。狀態列也跟著換單位（保留上次的總計，重組文字）。
+  - 欄寬：數字靠右畫、沒有省略號，放不下時前面的位數會被默默切掉（`594,542,592 KB` 會變成 `42,592 KB`，看起來像另一個有效數字）。所以大小、磁碟用量、檔案數三欄改成「使用者設定或預設寬度」與「量出來的最寬內容」取較大者。量的是目前所有項目的文字和欄標題（含排序箭頭，換排序時欄寬不會跳動），用清單字型與目前 DPI（`GetTextExtentPoint32W`）。換資料夾、換單位、換字型或 DPI 時重新量。拖曳也不能拖到比內容窄。面板中多出的寬度由名稱欄吸收，面板本身不變寬，避免每換一個資料夾就跳動。
+  - 安裝程式：新增「顯示單位」父工作與三個互斥子工作（Inno `[Tasks]` 的 `exclusive` 旗標），預設勾「自動」。取消父工作時單位設為自動。`dirsize.exe --setting unit <auto|kb|gb>`，其他值回傳 `ERROR_INVALID_PARAMETER`（87），不寫入。
+- **面板列出檔案**：面板改用 `Request(folder, true)`，和主視窗一樣列出資料夾內的檔案（以使用者自己的權限列出）。雙擊檔案不會開啟（原本就只對資料夾動作）。
+- **排序**：資料夾一律排在檔案前面（不論欄位與方向），兩組各自依所選欄位排序；主視窗和面板都套用（使用者選擇）。啟動時預設依名稱正序（原本是磁碟用量倒序）。
+
+本機驗證：ui-tests 460 項通過（新增 FormatSize 的 0、1、1024、1025、上限值，以及資料夾／檔案混合排序）。啟動建置出的 `dirsize.exe` 截圖確認：KB 模式欄位加寬、數字完整；GB 模式兩位小數；資料夾在前、檔案在後，預設名稱正序。面板未在本機驗證（不操作開發機的檔案總管），待 VM 測試。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1733,6 +1748,8 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 安裝程式 | [Inno Setup 6 更新紀錄（6.3.0 UTF-8、6.5.0 移除 BOM）](https://jrsoftware.org/files/is6-whatsnew.htm) |
 | 安裝程式 | [Inno Setup：[Run] 與 [UninstallRun]（runasoriginaluser、unchecked）](https://jrsoftware.org/ishelp/topic_runsection.htm) |
 | 安裝程式 | [Inno Setup：[Tasks]](https://jrsoftware.org/ishelp/topic_taskssection.htm) |
+| 安裝程式 | [Inno Setup：Components and Tasks Parameters（`not`／`and` 運算式）](https://jrsoftware.org/ishelp/topic_componentstasksparams.htm) |
+| 顯示單位 | [GetTextExtentPoint32W](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-gettextextentpoint32w) |
 | 安裝程式 | [Inno Setup：UsePreviousTasks](https://jrsoftware.org/ishelp/topic_setup_useprevioustasks.htm) |
 | 前端 | [CommandLineToArgvW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw) |
 | 前端 | [RegisterWindowMessageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerwindowmessagew) |

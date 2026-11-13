@@ -26,6 +26,21 @@ DWORD SetShowShareColumn(bool show) {
         RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, kShowShareValue, REG_DWORD, &value, sizeof(value)));
 }
 
+SizeUnit SizeUnitSetting() {
+    DWORD value = 0, size = sizeof(value);
+    if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, L"SizeUnit", RRF_RT_REG_DWORD, nullptr, &value, &size) !=
+        ERROR_SUCCESS) {
+        return SizeUnit::Auto;
+    }
+    return value == 1 ? SizeUnit::KB : value == 2 ? SizeUnit::GB : SizeUnit::Auto;
+}
+
+DWORD SetSizeUnitSetting(SizeUnit unit) {
+    const DWORD value = unit == SizeUnit::KB ? 1 : unit == SizeUnit::GB ? 2 : 0;
+    return static_cast<DWORD>(
+        RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, L"SizeUnit", REG_DWORD, &value, sizeof(value)));
+}
+
 std::wstring ColumnWidthsSetting(bool panel) {
     wchar_t buf[256] = {};
     DWORD size = sizeof(buf);

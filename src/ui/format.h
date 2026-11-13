@@ -11,6 +11,15 @@ namespace dirsize::ui {
 // Three significant digits from KB up.
 std::wstring FormatBytes(std::uint64_t bytes);
 
+// The unit sizes are shown in (settings.h, SizeUnitSetting).
+//   Auto: FormatBytes.
+//   KB:   whole KB, rounded up as File Explorer does ("0 KB", "1 KB" for
+//         1 byte), with thousands separators: "594,542,592 KB".
+//   GB:   two decimals with thousands separators: "1,234.56 GB", "0.00 GB".
+// 1 KB = 1024 bytes, 1 GB = 1024^3 bytes.
+enum class SizeUnit { Auto, KB, GB };
+std::wstring FormatSize(std::uint64_t bytes, SizeUnit unit);
+
 // Thousands separators with ',' : "1,234,567".
 std::wstring FormatCount(std::uint64_t count);
 

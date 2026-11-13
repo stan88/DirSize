@@ -11,9 +11,10 @@ A fast, low-resource tool for Windows that shows the size of every folder.
 
 - **Window**: a folder tree on the left; on the right, the selected folder's
   subfolders and files with their size, size on disk, share of the total and
-  number of files. Sort by any column, resize the columns.
+  number of files. Folders are listed before files; sort by any column (by
+  name at start), resize the columns. Sizes in automatic units, KB or GB.
 - **File Explorer panel**: select a folder in File Explorer and a narrow panel
-  beside the window lists the sizes of its subfolders.
+  beside the window lists the sizes of its subfolders and files.
 - **Context menu**: "Open with DirSize" on folders and drives.
 - Follows the Windows theme (light, dark, high contrast) and display language
   (English, Traditional Chinese; others can be added, see
@@ -45,9 +46,10 @@ Download `DirSize-<version>-setup.exe` from
 - "Open with DirSize" in the File Explorer context menu (all users)
 - Start the File Explorer panel when you sign in
 - Show the Share column
+- Size unit: automatic (checked), KB or GB
 
 These can be changed later in the program's "⋯" menu (the panel's right-click
-menu has the Share column too).
+menu has the Share column and the size unit too).
 
 The installer is **not code-signed** yet, so Windows shows "Unknown publisher"
 and SmartScreen may warn when it is downloaded.

@@ -30,6 +30,9 @@ std::uint64_t Key(const ListItem& item, Column column) {
 
 void SortItems(std::vector<ListItem>& items, Column column, bool descending) {
     std::stable_sort(items.begin(), items.end(), [&](const ListItem& a, const ListItem& b) {
+        // Folders first, then files, whatever the column and direction;
+        // each group sorted on its own (user request 2026-11-13).
+        if (a.isFolder != b.isFolder) return a.isFolder;
         if (column != Column::Name) {
             std::uint64_t ka = Key(a, column), kb = Key(b, column);
             if (ka != kb) return descending ? ka > kb : ka < kb;
