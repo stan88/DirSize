@@ -1,6 +1,11 @@
 DirSize shows the size of every folder on Windows: a window with a folder tree, a panel beside File Explorer, and "Open with DirSize" in the context menu.
 DirSize 顯示 Windows 上每個資料夾的大小：有資料夾樹的獨立視窗、檔案總管旁的面板，以及右鍵選單的「用 DirSize 開啟」。
 
+**Fixed in 0.2.1** / **0.2.1 修正**
+
+- On a drive other than the system drive, every sub-folder could be marked "no access" after the drive was dismounted and mounted again (for example after sleep), although you could open them. Sizes were still correct.
+  非系統磁碟在卸載又重新掛載後（例如睡眠喚醒後），子資料夾可能全部被標成「沒有權限」，但其實打得開。大小仍然正確。
+
 **New in 0.2.0** / **0.2.0 新增**
 
 - Size unit: automatic, KB or GB ("⋯" menu, the panel's right-click menu, the installer). Number columns widen so no digit is cut off.
