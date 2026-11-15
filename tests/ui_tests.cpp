@@ -22,6 +22,7 @@
 #include "ui/placement.h"
 #include "ui/scroll_geometry.h"
 #include "ui/tree_model.h"
+#include "ui/update_check.h"
 #include "ui/verb_command.h"
 
 namespace {
@@ -849,6 +850,66 @@ void TestStringTables() {
     CHECK(hasTab);
 }
 
+void TestUpdateCheck() {
+    using namespace dirsize::ui;
+    Version v;
+    CHECK(ParseVersion(L"v0.2.1", v) && v.major == 0 && v.minor == 2 && v.patch == 1);
+    CHECK(ParseVersion(L"10.20.30", v) && v.major == 10 && v.minor == 20 && v.patch == 30);
+    CHECK(!ParseVersion(L"", v));
+    CHECK(!ParseVersion(L"v", v));
+    CHECK(!ParseVersion(L"0.2", v));
+    CHECK(!ParseVersion(L"0.2.1.4", v));
+    CHECK(!ParseVersion(L"0.2.1-beta", v));
+    CHECK(!ParseVersion(L"0..1", v));
+    CHECK(!ParseVersion(L" 0.2.1", v));
+    CHECK(!ParseVersion(L"123456.0.0", v));
+    Version a, b;
+    ParseVersion(L"0.2.1", a);
+    ParseVersion(L"0.10.0", b);
+    CHECK(CompareVersions(a, b) < 0 && CompareVersions(b, a) > 0 && CompareVersions(a, a) == 0);
+
+    std::string value;
+    // The release notes (body) mention tag_name, with escaped quotes and
+    // brackets; nested objects have their own tag_name-like members.
+    const char* answer = R"({
+      "url": "https://api.github.com/repos/o/r/releases/1",
+      "author": {"login": "x", "tag_name": "v9.9.9", "list": [1, {"a": "]}"}]},
+      "body": "Fixed \"tag_name\": \"v8.0.0\" } { [ and \\ too",
+      "draft": false, "prerelease": false, "id": 123, "note": null,
+      "assets": [{"name": "a.zip", "tag_name": "v7.0.0"}],
+      "tag_name" : "v0.3.0",
+      "name": "v0.3.0"
+    })";
+    CHECK(TopLevelJsonString(answer, "tag_name", value) && value == "v0.3.0");
+    CHECK(TopLevelJsonString(answer, "body", value) && value == "Fixed \"tag_name\": \"v8.0.0\" } { [ and \\ too");
+    const char* escapes = R"({"k":"\u0041\/b"})";
+    CHECK(TopLevelJsonString(escapes, "k", value) && value == "A/b");
+    CHECK(!TopLevelJsonString(answer, "missing", value));
+    CHECK(!TopLevelJsonString(R"({"draft": false})", "draft", value));  // not a string
+    CHECK(!TopLevelJsonString(R"(["tag_name", "v1.0.0"])", "tag_name", value));
+    CHECK(!TopLevelJsonString(R"({"tag_name": "v1.0.0)", "tag_name", value));  // cut off
+    CHECK(!TopLevelJsonString("", "tag_name", value));
+    const char* escapedAccent = R"({"tag_name": "v\u00e91.0.0"})";
+    CHECK(TopLevelJsonString(escapedAccent, "tag_name", value) && value == "v?1.0.0");  // outside ASCII -> ?
+    CHECK(!TopLevelJsonString("{\"tag_name\": \"v\xc3\xa9" "1.0.0\"}", "tag_name", value));  // raw UTF-8
+
+    std::wstring latest;
+    CHECK(ClassifyUpdate(200, answer, L"0.2.1", latest) == UpdateState::Newer && latest == L"0.3.0");
+    CHECK(ClassifyUpdate(200, R"({"tag_name":"v0.2.1"})", L"0.2.1", latest) == UpdateState::UpToDate &&
+          latest == L"0.2.1");
+    // A build newer than the latest release (made before it is published).
+    CHECK(ClassifyUpdate(200, R"({"tag_name":"v0.2.0"})", L"0.2.1", latest) == UpdateState::UpToDate);
+    CHECK(ClassifyUpdate(200, R"({"tag_name":"v0.10.0"})", L"0.9.9", latest) == UpdateState::Newer);
+    CHECK(ClassifyUpdate(200, R"({"tag_name":"nightly"})", L"0.2.1", latest) == UpdateState::BadAnswer &&
+          latest.empty());
+    CHECK(ClassifyUpdate(200, "<html>", L"0.2.1", latest) == UpdateState::BadAnswer);
+    CHECK(ClassifyUpdate(200, R"({"tag_name":"v1.0.0"})", L"dev", latest) == UpdateState::BadAnswer);
+    CHECK(ClassifyUpdate(404, "", L"0.2.1", latest) == UpdateState::BadAnswer);
+    CHECK(ClassifyUpdate(500, "", L"0.2.1", latest) == UpdateState::BadAnswer);
+    CHECK(ClassifyUpdate(403, "", L"0.2.1", latest) == UpdateState::RateLimited);
+    CHECK(ClassifyUpdate(429, "", L"0.2.1", latest) == UpdateState::RateLimited);
+}
+
 }  // namespace
 
 int main() {
@@ -869,6 +930,7 @@ int main() {
     TestLanguagePick();
     TestLanguageIds();
     TestStringTables();
+    TestUpdateCheck();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

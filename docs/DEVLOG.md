@@ -1488,6 +1488,25 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
   - `OpenFileById` 失敗時寫日誌（含 Win32 錯誤碼），每個請求只寫一次。
 - service-tests 209 項通過。尚未驗證：安裝新版服務後，讓 D: 經過一次睡眠和喚醒，確認不再出現。
 
+### 2026-11-15　「⋯」選單的「檢查更新」
+
+使用者要求程式能知道有新版。三個做法：A 選單只開 Releases 頁面（不連網）、B 使用者按了才查詢、C 自動定期查詢。C 不採用：依「安裝程式列出所有選項並預設勾選」的規則會變成預設連網，和 README 的隱私承諾衝突。使用者選 B。
+
+- 查詢：`GET https://api.github.com/repos/stan88/DirSize/releases/latest`。文件說明它回傳最新的「非草稿、非預先發行」版本，狀態碼 200 或 404。只讀頂層的 `tag_name`。
+  - 標頭：`Accept: application/vnd.github+json`（文件建議）、`X-GitHub-Api-Version: 2026-03-10`（目前的版本；不指定時預設 `2022-11-28`，該版本 2028-03-10 停止支援）。
+  - User-Agent：文件規定一定要有，沒有會被拒絕；建議用應用程式名稱。這裡用 `DirSize/<版本>`，不帶其他資訊。
+  - 未驗證的請求每個 IP 每小時 60 次，403／429 顯示「稍後再試」。
+- 網路程式碼（`src/app/update_client.cpp`）：WinHTTP，同步呼叫，在另一個執行緒執行，結果以 `WM_APP + 3` 傳回視窗。
+  - `WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`（Windows 8.1 起）跟著系統和使用者的 proxy 設定。
+  - 逾時各 15 秒；回應上限 1 MB（實際約 8 KB）。
+  - 執行緒只拿視窗 handle，不拿視窗物件（視窗關掉時 `PostMessage` 失敗，結果直接刪除）。查詢中選單項目變灰，不會同時查兩次。
+  - 只連結進 `dirsize.exe`；服務和 CLI 沒有 winhttp（檢查三個 exe 的匯入確認）。
+- 判斷邏輯（`src/ui/update_check.cpp`，ui-tests 測試）：自己寫的小型 JSON 掃描，只走頂層成員，跳過巢狀物件、陣列和字串內容，所以發行說明裡出現的 `"tag_name"` 不會被誤認。版本必須是三個數字（可有 `v`），其他格式一律當作無法辨識。比目前版本新才算有新版；本機比最新發行還新（發行前的建置）算「已是最新」。
+- 介面：用 `MessageBoxW`，不用 TaskDialog（需要 comctl32 v6，manifest 沒有指定，和 `LoadIconMetric` 同樣原因）。有新版、查詢失敗時問是否開啟下載頁面；開的是程式內固定的 `https://github.com/stan88/DirSize/releases/latest`，不使用回應裡的網址。
+- README 中英版的 Privacy：保留 SignPath 要求的第一句；「沒有任何網路程式碼」改成說明這個唯一的例外。
+- 驗證：ui-tests 501 項（新增版本解析、JSON 掃描、判斷）。另外在 scratchpad 編一個小程式呼叫同一份 `StartUpdateCheck` 實際連線：目前版本 0.2.1 → 已是最新；0.2.0 → 有新版 0.2.1；0.3.0 → 已是最新。
+- 未驗證：在程式裡實際點選單、看訊息方塊；沒有網路、proxy 環境下的錯誤訊息。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1819,3 +1838,18 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 系統圖示 | [GetIconInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-geticoninfo) |
 | 服務修正 | [OpenFileById（hVolumeHint：同一磁碟區上任何檔案的 handle）](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-openfilebyid) |
 | 服務修正 | [System Error Codes 0-499（21 `ERROR_NOT_READY`）](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-) |
+| 檢查更新 | [GitHub REST：Get the latest release](https://docs.github.com/en/rest/releases/releases#get-the-latest-release) |
+| 檢查更新 | [GitHub REST：User-Agent 必填](https://docs.github.com/en/rest/using-the-rest-api/getting-started-with-the-rest-api#user-agent) |
+| 檢查更新 | [GitHub REST：API 版本（X-GitHub-Api-Version）](https://docs.github.com/en/rest/about-the-rest-api/api-versions) |
+| 檢查更新 | [GitHub REST：rate limit（未驗證每小時 60 次）](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api) |
+| 檢查更新 | [WinHttpOpen（WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY，Windows 8.1 起）](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpopen) |
+| 檢查更新 | [WinHttpSetTimeouts](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpsettimeouts) |
+| 檢查更新 | [WinHttpConnect](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpconnect) |
+| 檢查更新 | [WinHttpOpenRequest（WINHTTP_FLAG_SECURE）](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpopenrequest) |
+| 檢查更新 | [WinHttpSendRequest](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpsendrequest) |
+| 檢查更新 | [WinHttpReceiveResponse](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpreceiveresponse) |
+| 檢查更新 | [WinHttpQueryHeaders（WINHTTP_QUERY_STATUS_CODE）](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpqueryheaders) |
+| 檢查更新 | [WinHttpReadData](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpreaddata) |
+| 檢查更新 | [RFC 8259：JSON](https://www.rfc-editor.org/rfc/rfc8259) |
+| 檢查更新 | [MessageBoxW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-messageboxw) |
+| 檢查更新 | [ShellExecuteW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew) |

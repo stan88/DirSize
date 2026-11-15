@@ -50,3 +50,9 @@
 #define IDS_MENU_UNIT_AUTO      205
 #define IDS_MENU_UNIT_KB        206
 #define IDS_MENU_UNIT_GB        207
+#define IDS_MENU_CHECK_UPDATE   208
+#define IDS_UPDATE_NEWER        209
+#define IDS_UPDATE_CURRENT      210
+#define IDS_UPDATE_RATE_LIMITED 211
+#define IDS_UPDATE_BAD_ANSWER   212
+#define IDS_UPDATE_FAILED       213

@@ -24,6 +24,7 @@
 #include <string>
 
 #include "app/panel.h"
+#include "app/update_client.h"
 #include "ui/folder_source.h"
 #include "ui/folder_tree.h"
 #include "ui/format.h"
@@ -44,6 +45,8 @@ constexpr wchar_t kWindowClass[] = L"DirSizeMainWindow";
 constexpr WORD kAppIcon = 1;  // the ICON resource in dirsize.rc
 constexpr UINT kThemeChanged = WM_APP + 1;
 constexpr UINT kFolderLoaded = WM_APP + 2;
+constexpr UINT kUpdateChecked = WM_APP + 3;  // lParam = dirsize::app::UpdateOutcome*
+constexpr wchar_t kVersion[] = L"" DIRSIZE_VERSION;  // project(VERSION), from CMakeLists.txt
 constexpr WORD kCmdRefresh = 1;
 constexpr WORD kCmdPick = 2;
 constexpr WORD kCmdUp = 3;
@@ -56,6 +59,7 @@ constexpr UINT kMenuExplore = 103;
 constexpr UINT kMenuRefresh = 104;
 constexpr UINT kMenuAutostart = 105;
 constexpr UINT kMenuShowShare = 106;
+constexpr UINT kMenuCheckUpdate = 107;
 constexpr UINT kMenuUnitFirst = 110;  // + SizeUnit
 constexpr UINT kMenuLangAuto = 199;  // then kMenuLangFirst + index into Languages()
 constexpr UINT kMenuLangFirst = 200;
@@ -119,6 +123,7 @@ private:
     void ShowSettingsMenu();
     void ShowListMenu(int index, POINT screen);
     void SetMoreHover(bool hover);
+    void OnUpdateChecked(std::unique_ptr<dirsize::app::UpdateOutcome> outcome);
     int Scale(int dip) const { return MulDiv(dip, static_cast<int>(dpi_), 96); }
     int HeaderHeight() const { return Scale(40); }  // the path and the "..." button
     int StatusHeight() const { return Scale(28); }  // the status bar at the bottom
@@ -132,6 +137,7 @@ private:
     int treeWidthDip_ = kTreeWidthDip;
     bool dragging_ = false;     // moving the splitter
     bool moreHover_ = false;    // mouse over the "..." button
+    bool checkingUpdate_ = false;  // a "Check for updates" request is running
     ThemeWatcher theme_;
     Palette palette_;
     std::unique_ptr<FolderSource> source_;
@@ -405,6 +411,10 @@ void MainWindow::ShowSettingsMenu() {
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(langMenu), Text(IDS_MENU_LANGUAGE).c_str());
     }
+    // The only network access, and only on this command (README, Privacy).
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | (checkingUpdate_ ? MF_GRAYED : 0), kMenuCheckUpdate,
+                Text(IDS_MENU_CHECK_UPDATE).c_str());
     RECT more = MoreButtonRect();
     POINT pt{more.right, more.bottom};
     ClientToScreen(hwnd_, &pt);
@@ -446,6 +456,8 @@ void MainWindow::ShowSettingsMenu() {
         }
     } else if (cmd == kMenuPick) {
         PickFolder();
+    } else if (cmd == kMenuCheckUpdate && !checkingUpdate_) {
+        checkingUpdate_ = dirsize::app::StartUpdateCheck(hwnd_, kUpdateChecked, kVersion);
     } else if (cmd == kMenuLangAuto || (cmd >= kMenuLangFirst && cmd < kMenuLangFirst + languages.size())) {
         std::wstring choice = cmd == kMenuLangAuto ? L"" : languages[cmd - kMenuLangFirst].locale;
         if (choice != saved) {
@@ -461,6 +473,32 @@ void MainWindow::ShowSettingsMenu() {
             ApplyUiLanguage();
             Navigate(path_, true);
         }
+    }
+}
+
+// The answer of "Check for updates". A message box, not a task dialog with a
+// link: task dialogs need comctl32 version 6, which the manifest does not ask
+// for. "Yes" opens the fixed releases page, never a URL from the answer.
+void MainWindow::OnUpdateChecked(std::unique_ptr<dirsize::app::UpdateOutcome> outcome) {
+    checkingUpdate_ = false;
+    using dirsize::ui::UpdateState;
+    std::wstring text;
+    UINT type = MB_YESNO | MB_ICONWARNING;
+    switch (outcome->state) {
+        case UpdateState::Newer:
+            text = Format(IDS_UPDATE_NEWER, {outcome->latest, kVersion});
+            type = MB_YESNO | MB_ICONINFORMATION;
+            break;
+        case UpdateState::UpToDate:
+            text = Format(IDS_UPDATE_CURRENT, {kVersion});
+            type = MB_OK | MB_ICONINFORMATION;
+            break;
+        case UpdateState::RateLimited: text = Text(IDS_UPDATE_RATE_LIMITED); break;
+        case UpdateState::BadAnswer: text = Format(IDS_UPDATE_BAD_ANSWER, {std::to_wstring(outcome->code)}); break;
+        case UpdateState::NetworkError: text = Format(IDS_UPDATE_FAILED, {std::to_wstring(outcome->code)}); break;
+    }
+    if (MessageBoxW(hwnd_, text.c_str(), Text(IDS_APP_TITLE).c_str(), type) == IDYES) {
+        ShellExecuteW(hwnd_, nullptr, dirsize::app::kReleasesPage, nullptr, nullptr, SW_SHOWNORMAL);
     }
 }
 
@@ -740,6 +778,10 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         case kFolderLoaded:
             OnLoaded(std::unique_ptr<FolderResult>(reinterpret_cast<FolderResult*>(lp)));
+            return 0;
+        case kUpdateChecked:
+            OnUpdateChecked(std::unique_ptr<dirsize::app::UpdateOutcome>(
+                reinterpret_cast<dirsize::app::UpdateOutcome*>(lp)));
             return 0;
         case kThemeChanged:
         case WM_SYSCOLORCHANGE:

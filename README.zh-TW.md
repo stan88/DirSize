@@ -97,7 +97,7 @@ DirSize 是依據 Microsoft 公開文件撰寫的獨立實作。
 This program will not transfer any information to other networked systems
 unless specifically requested by the user or the person installing or operating it.
 （除非使用者或安裝、操作的人明確要求，本程式不會把任何資訊傳到其他連網的系統。）
-DirSize 沒有任何網路程式碼；服務只回應同一台電腦上的程式（它的具名管道會拒絕遠端連線）。
+唯一會連網的是「⋯」選單的「檢查更新」，而且只在你選它的時候：`dirsize.exe` 向 `api.github.com` 送出一個 HTTPS 請求，查詢 DirSize 最新發行版本的版本號。請求只帶程式名稱和版本（`DirSize/<版本>`），不含你的電腦或資料夾的任何資訊；和任何連線一樣，GitHub 會看到你的 IP 位址。服務和命令列工具沒有任何網路程式碼；服務只回應同一台電腦上的程式（它的具名管道會拒絕遠端連線）。
 
 ## 參與開發
 

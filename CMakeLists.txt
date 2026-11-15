@@ -100,6 +100,7 @@ add_library(dirsize_ui_core STATIC
     src/ui/verb_command.cpp
     src/ui/language.cpp
     src/ui/icon_key.cpp
+    src/ui/update_check.cpp
 )
 target_include_directories(dirsize_ui_core PUBLIC src PRIVATE ${DIRSIZE_GEN})
 add_dependencies(dirsize_ui_core dirsize_lang)
@@ -122,10 +123,13 @@ add_library(dirsize_ui STATIC
 target_link_libraries(dirsize_ui PUBLIC dirsize_ui_core dirsize_service WindowsApp dwmapi ole32 oleaut32 uuid shell32)
 
 # The front end executable (Windows subsystem).
-add_executable(dirsize WIN32 src/app/main.cpp src/app/panel.cpp src/app/dirsize.rc ${DIRSIZE_GEN}/lang.rc
+add_executable(dirsize WIN32 src/app/main.cpp src/app/panel.cpp src/app/update_client.cpp src/app/dirsize.rc ${DIRSIZE_GEN}/lang.rc
     src/app/dirsize.manifest)
 add_dependencies(dirsize dirsize_lang)
-target_link_libraries(dirsize PRIVATE dirsize_ui)
+# winhttp: "Check for updates" (src/app/update_client.cpp), the only network
+# code; dirsize.exe only, never the service or the command-line tool.
+target_link_libraries(dirsize PRIVATE dirsize_ui winhttp)
+target_compile_definitions(dirsize PRIVATE DIRSIZE_VERSION="${PROJECT_VERSION}")
 dirsize_add_version(dirsize "DirSize")
 
 add_executable(dirsize-cli src/cli/main.cpp)

@@ -110,8 +110,14 @@ certificate by [SignPath Foundation](https://signpath.org), under these rules:
 
 This program will not transfer any information to other networked systems
 unless specifically requested by the user or the person installing or
-operating it. DirSize contains no networking code; the service answers only
-programs on the same computer (its named pipe rejects remote clients).
+operating it. The only network access is "Check for updates" in the "⋯" menu,
+and only when you choose it: `dirsize.exe` sends one HTTPS request to
+`api.github.com` for the version number of the latest DirSize release. The
+request carries the program's name and version (`DirSize/<version>`) and
+nothing about your computer or your folders; GitHub sees your IP address, as
+with any connection. The service and the command-line tool contain no
+networking code; the service answers only programs on the same computer (its
+named pipe rejects remote clients).
 
 ## Contributing
 
