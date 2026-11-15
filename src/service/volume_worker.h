@@ -73,9 +73,6 @@ public:
 
     wchar_t Drive() const { return drive_; }
     const VolumeIdentity& Identity() const { return identity_; }
-    // A handle on the root folder, opened by the service; valid until Stop.
-    // Used as the hint for OpenFileById when checking child folders.
-    HANDLE RootHandle() const { return root_; }
 
     proto::VolumeStatus Status() const;
 
@@ -95,7 +92,6 @@ private:
     const wchar_t drive_;
     const VolumeIdentity identity_;
     LogFunction log_;
-    HANDLE root_ = INVALID_HANDLE_VALUE;
 
     // Owned by the worker thread.
     std::unique_ptr<NtfsLiveVolume> volume_;

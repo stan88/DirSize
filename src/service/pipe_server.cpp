@@ -105,6 +105,7 @@ HandledRequest HandleRequest(const std::byte* data, size_t size, HANDLE pipe,
     r.totals = a.totals;
     r.childCount = a.childCount;
     r.pageStart = q.pageStart < a.childCount ? q.pageStart : a.childCount;
+    bool openFailureLogged = false;
     for (const FolderAnswer::Child& c : a.children) {
         // Decision 8.1: sizes are shown for every child; the ones the caller
         // may not list are marked.
@@ -113,12 +114,21 @@ HandledRequest HandleRequest(const std::byte* data, size_t size, HANDLE pipe,
         descriptor.dwSize = sizeof(descriptor);
         descriptor.Type = FileIdType;
         descriptor.FileId.QuadPart = static_cast<LONGLONG>(c.id);
-        HANDLE h = OpenFileById(worker->RootHandle(), &descriptor, READ_CONTROL | FILE_READ_ATTRIBUTES,
+        // The hint is the folder just opened for this request: it is on the
+        // same volume and fresh. A handle kept from service start goes stale
+        // when the volume is dismounted and mounted again (seen after sleep),
+        // and every child then failed to open.
+        HANDLE h = OpenFileById(folder, &descriptor, READ_CONTROL | FILE_READ_ATTRIBUTES,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                 FILE_FLAG_BACKUP_SEMANTICS);
         if (h != INVALID_HANDLE_VALUE) {
             accessible = ClientMayList(token.get(), h, error);
             CloseHandle(h);
+        } else if (!openFailureLogged) {
+            const DWORD openError = GetLastError();
+            openFailureLogged = true;
+            log(L"child folder marked no access: OpenFileById failed (Win32 error " + std::to_wstring(openError) +
+                L")");
         }
         r.children.push_back({c.name, c.totals, accessible});
     }

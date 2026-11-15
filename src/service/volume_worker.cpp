@@ -29,16 +29,9 @@ std::chrono::seconds RescanBackoff(int consecutive) {
 }
 
 VolumeWorker::VolumeWorker(wchar_t drive, VolumeIdentity identity, LogFunction log)
-    : drive_(drive), identity_(std::move(identity)), log_(std::move(log)) {
-    const std::wstring rootPath = std::wstring(1, drive_) + L":\\";
-    root_ = CreateFileW(rootPath.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-}
+    : drive_(drive), identity_(std::move(identity)), log_(std::move(log)) {}
 
-VolumeWorker::~VolumeWorker() {
-    Stop();
-    if (root_ != INVALID_HANDLE_VALUE) CloseHandle(root_);
-}
+VolumeWorker::~VolumeWorker() { Stop(); }
 
 void VolumeWorker::Start() { thread_ = std::thread([this] { Run(); }); }
 

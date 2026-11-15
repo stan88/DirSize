@@ -1474,6 +1474,20 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 - 截圖確認：資料夾、`.ps1` 等檔案類型、系統磁碟（有 Windows 標誌）、雲端磁碟各自的圖示都正確。ui-tests 469 項（新增 IconKey）。
 - 未驗證：不同 DPI 的第二台螢幕上的縮放品質（這台兩個螢幕 DPI 相同），請在 VM 或其他螢幕上看。
 
+### 2026-11-15　修正：非系統磁碟上的子資料夾全部標「沒有權限」
+
+使用者回報：開發機的資料磁碟（D:）上，面板把每個子資料夾都標成「沒有權限」，但使用者明明打得開。
+
+- 用 `dirsize-cli query` 直接問服務：D: 任何資料夾底下的子資料夾都回 no access，父資料夾本身通過 `AccessCheck`；C: 正常（只有 `System Volume Information`）。
+- 以一般使用者身分重做同一步（`D:\` 當 hint，`OpenFileById` 開子資料夾）成功，所以不是 ID 或磁碟區本身的問題。
+- 服務日誌兩次出現 `D: needs a rescan: cannot query the journal (Win32 error 21)`。21 是 `ERROR_NOT_READY`：D: 曾經短暫未就緒，很可能是睡眠或喚醒時卸載又重新掛載（推測，日誌只有錯誤碼）。索引因此自己重掃，大小一直是對的。
+- 原因：`VolumeWorker` 在服務啟動時開一次根目錄 handle，之後一直拿它當 `OpenFileById` 的 hint。磁碟區重新掛載後這個 handle 失效，每個子資料夾都開不起來。程式把開不起來當成沒有權限（失敗就拒絕），而且沒有寫日誌。父資料夾是每次依路徑重新開啟，所以不受影響。
+- 驗證：重新啟動服務後，同一個資料夾的子資料夾全部正常。
+- 修正：
+  - hint 改用這次請求剛開啟的父資料夾 handle。它和子資料夾一定在同一個磁碟區，而且是新開的。文件說明 hint 只要是同一個磁碟區上任何檔案的 handle 即可。`VolumeWorker::RootHandle()` 移除。
+  - `OpenFileById` 失敗時寫日誌（含 Win32 錯誤碼），每個請求只寫一次。
+- service-tests 209 項通過。尚未驗證：安裝新版服務後，讓 D: 經過一次睡眠和喚醒，確認不再出現。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1803,3 +1817,5 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 系統圖示 | [IImageList::GetIcon（需要 comctl32 v6；沒有採用）](https://learn.microsoft.com/en-us/windows/win32/api/commoncontrols/nf-commoncontrols-iimagelist-geticon) |
 | 系統圖示 | [DrawIconEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-drawiconex) |
 | 系統圖示 | [GetIconInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-geticoninfo) |
+| 服務修正 | [OpenFileById（hVolumeHint：同一磁碟區上任何檔案的 handle）](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-openfilebyid) |
+| 服務修正 | [System Error Codes 0-499（21 `ERROR_NOT_READY`）](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-) |
