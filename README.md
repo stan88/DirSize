@@ -4,7 +4,7 @@
 
 A fast, low-resource tool for Windows that shows the size of every folder.
 
-> Status: 0.2.1. Download it from
+> Status: 0.3.0. Download it from
 > [Releases](https://github.com/stan88/DirSize/releases).
 
 ## What it does
