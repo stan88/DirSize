@@ -6,6 +6,10 @@ Windows 上快速、低資源的資料夾大小工具，顯示每個資料夾的
 
 > 狀態：0.3.0。請到 [Releases](https://github.com/stan88/DirSize/releases) 下載。
 
+![DirSize 獨立視窗：左邊是資料夾樹，右邊是選取資料夾的子資料夾和檔案，含大小、磁碟用量、比例和檔案數](docs/images/window.zh-TW.png)
+
+![檔案總管旁的面板，列出檔案總管目前資料夾的各項大小](docs/images/panel.zh-TW.png)
+
 ## 功能
 
 - **獨立視窗**：左邊是資料夾樹；右邊列出選取資料夾的子資料夾和檔案，
@@ -24,6 +28,19 @@ Windows 上快速、低資源的資料夾大小工具，顯示每個資料夾的
 - **前端**（`dirsize.exe`，獨立視窗和面板）：向服務查詢。服務沒有索引的地方
   （其他檔案系統、網路磁碟，或沒有安裝服務），就自己逐目錄掃描，速度比較慢。
 - **CLI**（`dirsize-cli.exe`）：查詢和效能量測；不帶參數執行就會列出指令。
+
+## 和其他工具的差別
+
+[WizTree](https://diskanalyzer.com/)、[TreeSize Free](https://www.jam-software.com/treesize_free)
+和 [WinDirStat](https://windirstat.net/) 是常見的磁碟空間分析工具；WizTree 和
+TreeSize Free 也會讀取 NTFS 的主檔案表（MFT）來加快掃描。DirSize 的不同有兩點：
+
+- **大小隨時是最新的，不必重新掃描。** 在 NTFS 磁碟上，服務會依 USN 變更日誌
+  持續更新索引，打開資料夾時大小就已經算好。
+- **檔案總管旁的面板**會列出你在檔案總管選取的資料夾裡各項目的大小。
+
+DirSize 採用 MIT 授權，任何用途都免費，包括工作上使用。它沒有 treemap、搜尋或
+重複檔案功能：想用圖形一眼看出磁碟被什麼佔滿，上面那些工具比較合適。
 
 ## 系統需求
 

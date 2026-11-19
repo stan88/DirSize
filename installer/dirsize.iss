@@ -167,5 +167,7 @@ begin
   if Exec(ExpandConstant('{app}\dirsize-service.exe'), 'install', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
     Exec(ExpandConstant('{sys}\sc.exe'), 'start DirSize', '', SW_HIDE, ewWaitUntilTerminated, Code)
   else
-    MsgBox(FmtMessage(CustomMessage('ServiceFailed'), [IntToStr(Code)]), mbError, MB_OK);
+    // Suppressible: a silent install with /SUPPRESSMSGBOXES (winget) must
+    // not stop on a dialog; a plain MsgBox is never suppressed.
+    SuppressibleMsgBox(FmtMessage(CustomMessage('ServiceFailed'), [IntToStr(Code)]), mbError, MB_OK, IDOK);
 end;

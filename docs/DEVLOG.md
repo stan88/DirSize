@@ -1527,6 +1527,28 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 - 問題回報要求版本、安裝方式、Windows 版本、發生的地方（可複選），並提醒不要貼個人資料夾名稱和路徑。
 - 沒有加 `config.yml`：Discussions 還沒開，沒有要導向的連結；空白 issue 保留。
 
+### 2026-11-19　安裝程式：靜默安裝不卡在錯誤訊息
+
+為了上 winget：winget 以靜默模式安裝，驗證時安裝程式逾時會被退件。
+
+- 服務註冊失敗時的訊息從 `MsgBox` 改成 `SuppressibleMsgBox`（預設回傳 `IDOK`）。Inno Setup 文件：`MsgBox` 屬於不能被隱藏的訊息框；`/SUPPRESSMSGBOXES` 只在搭配 `/SILENT` 或 `/VERYSILENT` 時有效。沒有加 `/SUPPRESSMSGBOXES` 時，`/SILENT`、`/VERYSILENT` 仍會顯示錯誤訊息。
+- winget 對 `InstallerType: inno` 預設傳哪些參數，文件沒寫，所以 manifest 明確指定 `InstallerSwitches`：`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`（有進度時用 `/SILENT`）。
+- 安裝程式在本機編譯成功；沒有實際測試失敗路徑和靜默安裝。
+
+### 2026-11-19　README：和其他工具的差別
+
+只寫各工具官網有寫的事實：WizTree、TreeSize Free 官網都寫明讀取 MFT 掃描 NTFS。官網沒寫的（是否即時更新、是否有背景服務）不寫，所以不做逐項比較表。DirSize 沒有的功能（treemap、搜尋、重複檔案）也寫出來。
+
+### 2026-11-19　README 截圖
+
+`docs/images/`：獨立視窗和檔案總管面板，中英文各一張。
+
+- 用一組名稱中性的示範資料夾（`C:\Workspace`，檔案內容是空的，只有大小），截完已刪除。
+- 隱私：資料夾樹會列出磁碟根目錄的其他資料夾和磁碟標籤，所以示範資料夾的名稱排在 `C:\` 最後，並捲動資料夾樹，畫面上只留系統資料夾。每張截圖都檢查過標題列、資料夾樹、清單和檔案總管的導覽窗格。
+- 視窗和面板都用 `PrintWindow` 截取，只畫出指定的視窗本身；不用螢幕截取，以免截到上面蓋著的其他視窗。
+- 英文版暫時設定 `HKCU\Software\DirSize\Language = en-US`，截完刪除。檔案總管本身的介面跟著 Windows 語言，英文截圖裡仍是中文。
+- 發現：用 `dirsize.exe <資料夾>` 開啟時，資料夾樹沒有把選取的項目捲進畫面（設計上應該捲到中間，`FolderTree::AfterChange`）。推測是上層的子資料夾還沒載入就處理了捲動要求，未驗證、未修正。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1879,3 +1901,13 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | issue 範本 | [Syntax for issue forms](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-issue-forms) |
 | issue 範本 | [Syntax for GitHub's form schema](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-githubs-form-schema) |
 | issue 範本 | [Configuring issue templates for your repository](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository) |
+| 安裝程式 | [Inno Setup：SuppressibleMsgBox](https://jrsoftware.org/ishelp/topic_isxfunc_suppressiblemsgbox.htm) |
+| 安裝程式 | [Inno Setup：MsgBox](https://jrsoftware.org/ishelp/topic_isxfunc_msgbox.htm) |
+| 安裝程式 | [Inno Setup：Setup Command Line Parameters](https://jrsoftware.org/ishelp/topic_setupcmdline.htm) |
+| winget | [Create your package manifest](https://learn.microsoft.com/en-us/windows/package-manager/package/manifest) |
+| winget | [Submit your manifest to the repository](https://learn.microsoft.com/en-us/windows/package-manager/package/repository) |
+| winget | [winget-pkgs：Authoring.md](https://github.com/microsoft/winget-pkgs/blob/master/doc/Authoring.md) |
+| winget | [winget-pkgs：installer manifest 1.12.0](https://github.com/microsoft/winget-pkgs/blob/master/doc/manifest/schema/1.12.0/installer.md) |
+| README 比較 | [WizTree FAQ（讀取 MFT）](https://diskanalyzer.com/faq) |
+| README 比較 | [TreeSize Free（本機 NTFS 用 MFT 掃描）](https://www.jam-software.com/treesize_free) |
+| README 比較 | [WinDirStat](https://windirstat.net/) |

@@ -7,6 +7,10 @@ A fast, low-resource tool for Windows that shows the size of every folder.
 > Status: 0.3.0. Download it from
 > [Releases](https://github.com/stan88/DirSize/releases).
 
+![The DirSize window: a folder tree, and the selected folder's subfolders and files with their size, size on disk, share and number of files](docs/images/window.png)
+
+![The panel beside File Explorer, listing the sizes of the folder open there](docs/images/panel.png)
+
 ## What it does
 
 - **Window**: a folder tree on the left; on the right, the selected folder's
@@ -32,6 +36,23 @@ A fast, low-resource tool for Windows that shows the size of every folder.
   service installed) it scans the folders itself, which is slower.
 - **CLI** (`dirsize-cli.exe`): queries and measurements; run it without
   arguments for its commands.
+
+## Compared with other tools
+
+[WizTree](https://diskanalyzer.com/), [TreeSize Free](https://www.jam-software.com/treesize_free)
+and [WinDirStat](https://windirstat.net/) are well-known disk space analyzers;
+WizTree and TreeSize Free also read the NTFS Master File Table for fast scans.
+DirSize differs in two ways:
+
+- **Sizes stay current without a new scan.** On NTFS drives the service
+  keeps its index up to date from the USN change journal, so the sizes are
+  there when you open a folder.
+- **A panel beside File Explorer** lists the sizes of the folder you select
+  there.
+
+DirSize is MIT-licensed and free for any use, including at work. It has no
+treemap, search or duplicate finder: for a visual overview of what fills a
+drive, those tools are the better choice.
 
 ## Requirements
 
