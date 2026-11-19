@@ -1507,6 +1507,26 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 - 驗證：ui-tests 501 項（新增版本解析、JSON 掃描、判斷）。另外在 scratchpad 編一個小程式呼叫同一份 `StartUpdateCheck` 實際連線：目前版本 0.2.1 → 已是最新；0.2.0 → 有新版 0.2.1；0.3.0 → 已是最新。
 - 未驗證：在程式裡實際點選單、看訊息方塊；沒有網路、proxy 環境下的錯誤訊息。
 
+### 2026-11-19　發行檔附 SHA-256 與建置來源證明
+
+安裝檔沒有簽章，又會裝 LocalSystem 服務，下載的人需要能自己確認檔案來源。release job 加兩步：
+
+- `SHA256SUMS.txt`：`sha256sum` 算兩個檔案的 SHA-256，和檔案一起放上 Release。程式的「檢查更新」只讀 `tag_name`，多一個 asset 沒有影響。
+- 建置來源證明（artifact attestation）：`actions/attest@v4`（releases 最新 v4.2.2）。`actions/attest-build-provenance` 從 v4 起只是它的包裝，README 建議新設定直接用 `actions/attest`。`subject-path` 可以寫多行、可用 glob。公開 repo 在所有方案都可以用，用 Sigstore 公用實例簽署。
+  - 權限只加在 release job：`id-token: write`、`attestations: write`。`push-to-registry` 預設 false，不需要 `artifact-metadata: write`。
+  - 放在 ubuntu 的 release job，證明的是實際上傳到 Release 的檔案。
+  - 驗證：`gh attestation verify <檔案> -R stan88/DirSize`。
+- `.github/release-notes.md` 加「檢查下載的檔案」段落（中英）。
+- 未驗證：要等下一次推 tag 才會實際執行。
+
+### 2026-11-19　issue 範本
+
+`.github/ISSUE_TEMPLATE/1-bug.yml`、`2-feature.yml`，用 GitHub issue forms（文件標示為 public preview）。中英雙語。
+
+- 標籤用 repo 已有的 `bug`、`enhancement`；文件說明不存在的標籤不會自動建立。
+- 問題回報要求版本、安裝方式、Windows 版本、發生的地方（可複選），並提醒不要貼個人資料夾名稱和路徑。
+- 沒有加 `config.yml`：Discussions 還沒開，沒有要導向的連結；空白 issue 保留。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1853,3 +1873,9 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | 檢查更新 | [RFC 8259：JSON](https://www.rfc-editor.org/rfc/rfc8259) |
 | 檢查更新 | [MessageBoxW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-messageboxw) |
 | 檢查更新 | [ShellExecuteW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew) |
+| 發行驗證 | [actions/attest](https://github.com/actions/attest) |
+| 發行驗證 | [actions/attest-build-provenance（v4 起是 actions/attest 的包裝）](https://github.com/actions/attest-build-provenance) |
+| 發行驗證 | [Using artifact attestations to establish provenance for builds](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) |
+| issue 範本 | [Syntax for issue forms](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-issue-forms) |
+| issue 範本 | [Syntax for GitHub's form schema](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-githubs-form-schema) |
+| issue 範本 | [Configuring issue templates for your repository](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository) |

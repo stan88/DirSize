@@ -44,6 +44,10 @@ Windows 10 1809 以上，x64。
 
 安裝程式**還沒有數位簽章**，所以 Windows 會顯示「未知的發行者」，
 從網路下載時 SmartScreen 也可能跳出警告。
+0.3.0 之後的版本都附 `SHA256SUMS.txt` 和建置來源證明，可以確認檔案是由這個
+repo 的 GitHub Actions workflow 建置：
+`gh attestation verify DirSize-<version>-setup.exe -R stan88/DirSize`
+（需要 [GitHub CLI](https://cli.github.com/)）。
 
 解除安裝會移除服務、程式檔案、右鍵選單和索引快取，以及執行解除安裝的
 那個帳號的登入自動啟動設定。其他個人設定（`HKEY_CURRENT_USER\Software\DirSize`）會保留。

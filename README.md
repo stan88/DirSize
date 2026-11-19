@@ -53,6 +53,11 @@ menu has the Share column and the size unit too).
 
 The installer is **not code-signed** yet, so Windows shows "Unknown publisher"
 and SmartScreen may warn when it is downloaded.
+Releases after 0.3.0 include `SHA256SUMS.txt` and a build
+provenance attestation, so you can check that a file was built by this
+repository's GitHub Actions workflow:
+`gh attestation verify DirSize-<version>-setup.exe -R stan88/DirSize`
+(needs the [GitHub CLI](https://cli.github.com/)).
 
 Uninstalling removes the service, the program files, the context menu and the
 index cache, and the sign-in entry of the account that uninstalls. Other

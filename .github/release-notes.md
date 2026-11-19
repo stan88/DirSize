@@ -25,4 +25,11 @@ The files are **not code-signed** yet, so Windows shows "Unknown publisher" and 
 
 Built by GitHub Actions from the tagged source. / 由 GitHub Actions 從這個 tag 的原始碼建置。
 
+**Checking a download** / **檢查下載的檔案**
+
+- `SHA256SUMS.txt` lists the SHA-256 of both files. In PowerShell: `Get-FileHash .\DirSize-<version>-setup.exe`
+  `SHA256SUMS.txt` 列出兩個檔案的 SHA-256。在 PowerShell 執行：`Get-FileHash .\DirSize-<version>-setup.exe`
+- Each file has a build provenance attestation showing it was built by this repository's workflow. With the [GitHub CLI](https://cli.github.com/): `gh attestation verify DirSize-<version>-setup.exe -R stan88/DirSize`
+  每個檔案都有建置來源證明，證明它由這個 repo 的 workflow 建置。用 [GitHub CLI](https://cli.github.com/) 驗證：`gh attestation verify DirSize-<version>-setup.exe -R stan88/DirSize`
+
 [Code signing policy](https://github.com/stan88/DirSize#code-signing-policy) · [Privacy](https://github.com/stan88/DirSize#privacy) / [程式碼簽章政策與隱私](https://github.com/stan88/DirSize/blob/main/README.zh-TW.md)

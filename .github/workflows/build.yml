@@ -65,8 +65,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     # Creating a release needs contents: write; only this job has it.
+    # id-token and attestations: write let actions/attest sign the build
+    # provenance with the workflow's identity (docs/DEVLOG.md).
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -74,6 +78,22 @@ jobs:
         with:
           name: DirSize
           path: dist
+
+      # SHA256SUMS.txt is published with the two files; check a download
+      # with `sha256sum -c` or PowerShell Get-FileHash.
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum DirSize-*-setup.exe DirSize-*-portable.zip > SHA256SUMS.txt
+
+      # Build provenance: a signed record that these files were built by
+      # this workflow from this commit. Verify with
+      # gh attestation verify <file> -R stan88/DirSize
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/DirSize-*-setup.exe
+            dist/DirSize-*-portable.zip
 
       # A draft: it is published by hand on the Releases page after a look.
       # The notes are .github/release-notes.md followed by the generated list

@@ -1,0 +1,20 @@
+name: Feature request / 功能建議
+description: An idea for something DirSize could do. / 建議 DirSize 新增或改進的功能。
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you want to do / 你想做什麼
+      description: The task or problem, not only the solution. / 說明想完成的事或遇到的問題，而不只是解法。
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea / 你的構想
+  - type: textarea
+    id: other
+    attributes:
+      label: Anything else / 其他補充
+      description: Screenshots, or how other tools do it. / 截圖，或其他工具的做法。
