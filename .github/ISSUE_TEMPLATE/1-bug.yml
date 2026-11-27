@@ -12,7 +12,7 @@ body:
     attributes:
       label: DirSize version / DirSize 版本
       description: The file name of the installer you ran, or Properties > Details of dirsize.exe. / 執行的安裝檔檔名，或 dirsize.exe 的「內容 > 詳細資料」。
-      placeholder: "0.3.0"
+      placeholder: "0.4.0"
     validations:
       required: true
   - type: dropdown

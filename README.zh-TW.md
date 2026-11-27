@@ -4,7 +4,7 @@
 
 Windows 上快速、低資源的資料夾大小工具，顯示每個資料夾的大小。
 
-> 狀態：0.3.0。請到 [Releases](https://github.com/stan88/DirSize/releases) 下載。
+> 狀態：0.4.0。請到 [Releases](https://github.com/stan88/DirSize/releases) 下載。
 
 ![DirSize 獨立視窗：左邊是資料夾樹，右邊是選取資料夾的子資料夾和檔案，含大小、磁碟用量、比例和檔案數](docs/images/window.zh-TW.png)
 

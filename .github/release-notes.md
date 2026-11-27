@@ -1,15 +1,15 @@
 DirSize shows the size of every folder on Windows: a window with a folder tree, a panel beside File Explorer, and "Open with DirSize" in the context menu.
 DirSize 顯示 Windows 上每個資料夾的大小：有資料夾樹的獨立視窗、檔案總管旁的面板，以及右鍵選單的「用 DirSize 開啟」。
 
+**New in 0.4.0** / **0.4.0 新增**
+
+- "Start the File Explorer panel" in the "⋯" menu, to open the panel again after closing it. It is grayed out while the panel is running.
+  「⋯」選單新增「啟動檔案總管面板」，關掉面板之後可以從這裡再打開。面板正在執行時這一項是灰色的。
+
 **New in 0.3.0** / **0.3.0 新增**
 
 - "Check for updates…" in the "⋯" menu. It connects only when you choose it: one request to GitHub for the latest version number (see [Privacy](https://github.com/stan88/DirSize#privacy)).
   「⋯」選單新增「檢查更新…」。只有你選它的時候才會連網：向 GitHub 查詢一次最新的版本號（見[隱私](https://github.com/stan88/DirSize/blob/main/README.zh-TW.md#隱私)）。
-
-**Fixed in 0.2.1** / **0.2.1 修正**
-
-- On a drive other than the system drive, every sub-folder could be marked "no access" after the drive was dismounted and mounted again (for example after sleep), although you could open them. Sizes were still correct.
-  非系統磁碟在卸載又重新掛載後（例如睡眠喚醒後），子資料夾可能全部被標成「沒有權限」，但其實打得開。大小仍然正確。
 
 **Download** / **下載**
 
