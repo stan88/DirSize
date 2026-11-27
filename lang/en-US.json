@@ -57,6 +57,8 @@
     "IDS_UPDATE_CURRENT": "You have the latest version (%1).",
     "IDS_UPDATE_RATE_LIMITED": "GitHub is refusing the check for now (it allows a limited number per hour). Please try again later.\n\nOpen the download page to look yourself?",
     "IDS_UPDATE_BAD_ANSWER": "GitHub's answer could not be read (HTTP %1).\n\nOpen the download page to look yourself?",
-    "IDS_UPDATE_FAILED": "Could not connect to check for updates, error %1.\n\nOpen the download page to look yourself?"
+    "IDS_UPDATE_FAILED": "Could not connect to check for updates, error %1.\n\nOpen the download page to look yourself?",
+    "IDS_MENU_START_PANEL": "Start the File Explorer panel",
+    "IDS_ERR_START_PANEL": "Cannot start the File Explorer panel, error %1"
   }
 }

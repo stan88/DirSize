@@ -99,4 +99,22 @@ DWORD SetPanelAutostart(bool on) {
                                               static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t))));
 }
 
+bool IsPanelRunning() { return FindWindowW(kPanelWindowClass, nullptr) != nullptr; }
+
+DWORD StartPanel() {
+    const std::wstring exe = ExePath();
+    if (exe.empty()) return GetLastError();
+    // CreateProcessW may write to the command line buffer, so pass a copy.
+    std::wstring command = PanelCommandLine(exe);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        return GetLastError();
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return ERROR_SUCCESS;
+}
+
 }  // namespace dirsize::ui

@@ -31,4 +31,12 @@ bool IsShellVerbSetByInstaller();
 bool IsPanelAutostart();
 DWORD SetPanelAutostart(bool on);  // ERROR_SUCCESS or the Win32 error
 
+// The panel's window class (app/panel.cpp registers it).
+inline constexpr wchar_t kPanelWindowClass[] = L"DirSizePanel";
+// True when a panel of this session is running: its window exists even while
+// hidden (FindWindowW also finds hidden top-level windows).
+bool IsPanelRunning();
+// Start "<this exe> --panel" (CreateProcessW). ERROR_SUCCESS or the Win32 error.
+DWORD StartPanel();
+
 }  // namespace dirsize::ui

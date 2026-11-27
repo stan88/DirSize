@@ -1549,6 +1549,16 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 - 英文版暫時設定 `HKCU\Software\DirSize\Language = en-US`，截完刪除。檔案總管本身的介面跟著 Windows 語言，英文截圖裡仍是中文。
 - 發現：用 `dirsize.exe <資料夾>` 開啟時，資料夾樹沒有把選取的項目捲進畫面（設計上應該捲到中間，`FolderTree::AfterChange`）。推測是上層的子資料夾還沒載入就處理了捲動要求，未驗證、未修正。
 
+### 2026-11-27　「⋯」選單的「啟動檔案總管面板」
+
+起因：面板右上角的 ✕ 會結束 `--panel` 程序，之後介面上沒有地方可以再打開，只能重新登入，或自己執行 `dirsize.exe --panel`。
+
+- 「⋯」選單新增「啟動檔案總管面板」，排在「登入時自動啟動檔案總管面板」前面。用 `CreateProcessW` 執行 `"<執行檔>" --panel`（和登入時自動啟動用同一個命令，`PanelCommandLine`）。
+- 面板已經在執行時，這一項變成灰色，以免開出第二個面板。判斷方式是用 `FindWindowW` 找面板的視窗類別 `DirSizePanel`：本機實測：面板隱藏時（`IsWindowVisible` 是 false）也找得到，程序結束後就找不到。文件沒有寫到隱藏視窗的情況，所以這是依實測的行為。類別名稱改成共用的 `kPanelWindowClass`（`ui/shell_verb.h`），面板和選單用同一個常數。
+- 新字串 `IDS_MENU_START_PANEL`、`IDS_ERR_START_PANEL`（啟動失敗時在狀態列顯示錯誤碼）。
+- 已知的限制：剛按下、面板視窗還沒建立的短暫時間內再開一次選單，仍然可以再啟動一個。
+- 本機驗證：建置通過，ui-tests 501 項通過。選單操作還沒實測。
+
 ## 參考資料
 
 | 元件 | 文件 |
@@ -1911,3 +1921,5 @@ SDK 標頭檔：Windows SDK 10.0.26100.0 `um/winioctl.h`，查 `READ_USN_JOURNAL
 | README 比較 | [WizTree FAQ（讀取 MFT）](https://diskanalyzer.com/faq) |
 | README 比較 | [TreeSize Free（本機 NTFS 用 MFT 掃描）](https://www.jam-software.com/treesize_free) |
 | README 比較 | [WinDirStat](https://windirstat.net/) |
+| 啟動面板 | [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw) |
+| 啟動面板 | [FindWindowW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-findwindoww) |

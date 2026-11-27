@@ -12,6 +12,7 @@
 #include "ui/format.h"
 #include "ui/placement.h"
 #include "ui/settings.h"
+#include "ui/shell_verb.h"
 #include "ui/size_list.h"
 #include "ui/strings.h"
 #include "ui/theme.h"
@@ -20,7 +21,7 @@ using namespace dirsize::ui;
 
 namespace {
 
-constexpr wchar_t kPanelClass[] = L"DirSizePanel";
+constexpr const wchar_t* kPanelClass = kPanelWindowClass;  // ui/shell_verb.h
 constexpr UINT kThemeChanged = WM_APP + 1;
 constexpr UINT kFolderLoaded = WM_APP + 2;
 constexpr UINT kExplorerChanged = WM_APP + 3;

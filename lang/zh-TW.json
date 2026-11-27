@@ -60,6 +60,8 @@
     "IDS_UPDATE_CURRENT": "已經是最新版本（%1）。",
     "IDS_UPDATE_RATE_LIMITED": "GitHub 暫時拒絕查詢（每小時的查詢次數有限），請稍後再試。\n\n要開啟下載頁面自己查看嗎？",
     "IDS_UPDATE_BAD_ANSWER": "GitHub 的回應無法辨識（HTTP %1）。\n\n要開啟下載頁面自己查看嗎？",
-    "IDS_UPDATE_FAILED": "無法連線檢查更新，錯誤碼 %1。\n\n要開啟下載頁面自己查看嗎？"
+    "IDS_UPDATE_FAILED": "無法連線檢查更新，錯誤碼 %1。\n\n要開啟下載頁面自己查看嗎？",
+    "IDS_MENU_START_PANEL": "啟動檔案總管面板",
+    "IDS_ERR_START_PANEL": "無法啟動檔案總管面板，錯誤碼 %1"
   }
 }

@@ -60,6 +60,7 @@ constexpr UINT kMenuRefresh = 104;
 constexpr UINT kMenuAutostart = 105;
 constexpr UINT kMenuShowShare = 106;
 constexpr UINT kMenuCheckUpdate = 107;
+constexpr UINT kMenuStartPanel = 108;
 constexpr UINT kMenuUnitFirst = 110;  // + SizeUnit
 constexpr UINT kMenuLangAuto = 199;  // then kMenuLangFirst + index into Languages()
 constexpr UINT kMenuLangFirst = 200;
@@ -377,6 +378,9 @@ void MainWindow::ShowSettingsMenu() {
     } else {
         AppendMenuW(menu, MF_STRING | (installed ? MF_CHECKED : MF_UNCHECKED), kMenuVerb, Text(IDS_MENU_VERB).c_str());
     }
+    // Grayed while a panel runs: a second one would show beside the first.
+    AppendMenuW(menu, MF_STRING | (IsPanelRunning() ? MF_GRAYED : 0), kMenuStartPanel,
+                Text(IDS_MENU_START_PANEL).c_str());
     const bool autostart = IsPanelAutostart();
     AppendMenuW(menu, MF_STRING | (autostart ? MF_CHECKED : MF_UNCHECKED), kMenuAutostart,
                 Text(IDS_MENU_AUTOSTART).c_str());
@@ -423,7 +427,15 @@ void MainWindow::ShowSettingsMenu() {
                        nullptr));
     DestroyMenu(menu);
     SetMoreHover(false);
-    if (cmd == kMenuAutostart) {
+    if (cmd == kMenuStartPanel) {
+        if (!IsPanelRunning()) {
+            DWORD error = StartPanel();
+            if (error != ERROR_SUCCESS) {
+                status_ = Format(IDS_ERR_START_PANEL, {std::to_wstring(error)});
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+        }
+    } else if (cmd == kMenuAutostart) {
         DWORD error = SetPanelAutostart(!autostart);
         if (error != ERROR_SUCCESS) {
             status_ = Format(IDS_ERR_SETTING, {std::to_wstring(error)});
